@@ -25,15 +25,18 @@ function formatConstructorArgs(args) {
 }
 
 const defaultOpts = {
-    protocolVersion: '1.4.1',
+    protocolVersion: '1.4',
     initialRevenueSplit: ['0.05'.ether, '0.09'.ether, '0'.ether],
     depositAddress: null,
     fixedSupplyTokenAddress: null,
     deployThirdParty: false,
+    genesisBlockTimestamp: 1606824023n,
+    genesisValidatorRoot: '0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95',
     secondsPerSlot: 12n,
     slotsPerHistoricalRoot: 8192n,
     beaconRootsHistoryBufferLength: 8191n,
     beaconRoots: '0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02',
+    withdrawalRequestPredeployAddress: '0x00000961Ef480Eb55e80D19ad83579A64c007002',
     logging: true,
     forkSlots: [
         74240n * 32n,   // Altair
@@ -41,8 +44,6 @@ const defaultOpts = {
         194048n * 32n,  // Capella
         269568n * 32n,  // Deneb
         364032n * 32n,  // Electra
-        411392n * 32n,  // Fulu
-        18446744073709551615n, // Gloas (not configured)
     ]
 };
 
@@ -157,8 +158,8 @@ export class RocketPoolDeployer {
         this.contractPlan['rocketMinipoolDelegate'].constructorArgs = [];
         this.contractPlan['rocketNodeDistributorDelegate'].constructorArgs = [];
         this.contractPlan['rocketMinipoolBase'].constructorArgs = [];
-        this.contractPlan['beaconStateVerifier'].constructorArgs = () => [this.rocketStorageInstance.target, opts.slotsPerHistoricalRoot, opts.forkSlots, opts.beaconRoots];
-        this.contractPlan['rocketMegapoolDelegate'].constructorArgs = () => [this.rocketStorageInstance.target];
+        this.contractPlan['beaconStateVerifier'].constructorArgs = () => [this.rocketStorageInstance.target, opts.slotsPerHistoricalRoot, opts.forkSlots, opts.beaconRoots, opts.genesisBlockTimestamp, opts.genesisValidatorRoot];
+        this.contractPlan['rocketMegapoolDelegate'].constructorArgs = () => [this.rocketStorageInstance.target, opts.withdrawalRequestPredeployAddress];
 
         // Setup deployment
         this.addStage('Deploy storage', 0, [
