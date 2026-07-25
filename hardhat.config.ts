@@ -8,6 +8,10 @@ import {
     warningsConfig,
 } from "./hardhat-common.config.js";
 
+const privateKey = process.env.PRIVATE_KEY
+    ? (process.env.PRIVATE_KEY.startsWith("0x") ? process.env.PRIVATE_KEY : `0x${process.env.PRIVATE_KEY}`)
+    : undefined;
+
 export default defineConfig({
     ...commonConfig,
     networks: {
@@ -30,7 +34,7 @@ export default defineConfig({
             type: "http",
             chainType: "l1",
             url: providerUrl,
-            accounts: {
+            accounts: privateKey ? [privateKey] : {
                 mnemonic: mnemonicPhrase,
                 path: "m/44'/60'/0'/0",
                 initialIndex: 0,

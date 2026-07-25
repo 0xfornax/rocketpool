@@ -39,6 +39,7 @@ const defaultOpts = {
     beaconRoots: '0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02',
     withdrawalRequestPredeployAddress: '0x00000961Ef480Eb55e80D19ad83579A64c007002',
     logging: true,
+    // BeaconStateVerifier constructor expects uint64[6]: Altair..Fulu
     forkSlots: [
         74240n * 32n,   // Altair
         144896n * 32n,  // Bellatrix
@@ -519,9 +520,21 @@ export class RocketPoolDeployer {
         const address = instance.target;
         this.log(`- Deployed to ${address} @ ${rsTx.hash}`);
         this.stageTxs.push(rsTx);
+
+        // Record so scripts/deploy.js can write addresses into deployments/*.json
+        // (used by Kurtosis Smart Node env generation).
+        const planKey = artifactName.charAt(0).toLowerCase() + artifactName.slice(1);
+        this.deployedContracts[planKey] = {
+            artifact: artifact,
+            constructorArgs: formatConstructorArgs(constructorArgs),
+            abi: artifact.abi,
+            address: address,
+            instance: instance,
+        };
     }
 
     async deployThirdPartyContracts() {
+        // Helpers required by Smart Node state manager / multicall paths.
         await this.deployThirdPartyContract('EthBalanceChecker');
         await this.deployThirdPartyContract('Multicall2');
         await this.deployThirdPartyContract('RocketSignerRegistry');

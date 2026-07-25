@@ -17,6 +17,31 @@ const verify = process.env.VERIFY === 'true' || false;
 const preamble = process.env.PREAMBLE || null;
 const etherscanApiKey = process.env.ETHERSCAN_API_KEY || null;
 
+// Optional env overrides used by the Kurtosis / private-network deploy path.
+// BeaconStateVerifier expects uint64[6]: Altair, Bellatrix, Capella, Deneb, Electra, Fulu.
+function envBigInt(name, fallback) {
+    return process.env[name] !== undefined && process.env[name] !== ''
+        ? BigInt(process.env[name])
+        : fallback;
+}
+
+function envHex(name, fallback) {
+    return process.env[name] !== undefined && process.env[name] !== ''
+        ? process.env[name]
+        : fallback;
+}
+
+function parseForkSlots(fallback) {
+    if (!process.env.FORK_SLOTS) {
+        return fallback;
+    }
+    const parts = process.env.FORK_SLOTS.split(',').map((s) => BigInt(s.trim()));
+    if (parts.length !== 6) {
+        throw new Error(`FORK_SLOTS must contain 6 comma-separated slot numbers, got ${parts.length}`);
+    }
+    return parts;
+}
+
 const chainOpts = {
     'mainnet': {
         deployer: {
@@ -64,21 +89,52 @@ const chainOpts = {
     },
     'private': {
         deployer: {
-        depositAddress: '0x00000000219ab540356cBB839Cbe05303d7705Fa',
-        rocketTokenRPLFixedSupply: null,
-        secondsPerSlot: 12n,
-        slotsPerHistoricalRoot: 8192n,
-        beaconRootsHistoryBufferLength: 8191n,
-        beaconRoots: '0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02',
-        forkSlots: [
-            0n, // Altair
-            0n, // Bellatrix
-            0n, // Capella
-            0n, // Deneb
-            0n, // Electra
-            0n, // Fulu
-            18446744073709551615n, // Gloas (not configured)
-        ],
+            depositAddress: '0x00000000219ab540356cBB839Cbe05303d7705Fa',
+            rocketTokenRPLFixedSupply: null,
+            secondsPerSlot: 12n,
+            slotsPerHistoricalRoot: 8192n,
+            beaconRootsHistoryBufferLength: 8191n,
+            beaconRoots: '0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02',
+            forkSlots: [
+                0n, // Altair
+                0n, // Bellatrix
+                0n, // Capella
+                0n, // Deneb
+                0n, // Electra
+                0n, // Fulu
+                18446744073709551615n, // Gloas (not configured)
+            ],
+        },
+        deployStorageHelper: true,
+        mintDRPL: true,
+        setDefaults: true,
+    },
+    // Local Kurtosis network (e.g. glamsterdam-devnet-7 via ethereum-package).
+    'kurtosis': {
+        deployer: {
+            depositAddress: '0x00000000219ab540356cBB839Cbe05303d7705Fa',
+            fixedSupplyTokenAddress: null,
+            genesisBlockTimestamp: envBigInt('GENESIS_BLOCK_TIMESTAMP', 0n),
+            genesisValidatorRoot: envHex(
+                'GENESIS_VALIDATOR_ROOT',
+                '0x0000000000000000000000000000000000000000000000000000000000000000',
+            ),
+            secondsPerSlot: envBigInt('SECONDS_PER_SLOT', 12n),
+            // ethereum-package mainnet preset (scripts/devnet-7/network_params.yaml).
+            // Must match CL SLOTS_PER_HISTORICAL_ROOT (8192) for BeaconStateVerifier.
+            slotsPerHistoricalRoot: envBigInt('SLOTS_PER_HISTORICAL_ROOT', 8192n),
+            beaconRootsHistoryBufferLength: 8191n,
+            beaconRoots: envHex('BEACON_ROOTS', '0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02'),
+            forkSlots: parseForkSlots([
+                0n, // Altair
+                0n, // Bellatrix
+                0n, // Capella
+                0n, // Deneb
+                0n, // Electra
+                0n, // Fulu
+            ]),
+            // Multicall2 + EthBalanceChecker for Smart Node (native/hybrid) against Kurtosis.
+            deployThirdParty: true,
         },
         deployStorageHelper: true,
         mintDRPL: true,
@@ -96,6 +152,9 @@ injectBNHelpers();
 
 async function deploy() {
     const opts = chainOpts[chain];
+    if (!opts) {
+        throw new Error(`Unknown CHAIN '${chain}'. Valid options: ${Object.keys(chainOpts).join(', ')}`);
+    }
     const [signer] = await ethers.getSigners();
     const deployer = new RocketPoolDeployer(signer, opts.deployer);
 

@@ -1,0 +1,40 @@
+# Lean Kurtosis network for glamsterdam-devnet-7 + Rocket Pool contract deploy.
+# Spec: https://notes.ethereum.org/@ethpandaops/glamsterdam-devnet-7
+# Package: https://github.com/ethpandaops/ethereum-package
+#
+# Full multi-client matrix from the notes is intentionally omitted for a
+# lighter local environment. Images and fork timing match devnet-7.
+#
+# IMPORTANT: use mainnet preset (not minimal). Smart Node Gloas SSZ types and
+# BeaconStateVerifier historical-root gindices assume mainnet vector widths
+# (SLOTS_PER_HISTORICAL_ROOT=8192, etc.). Minimal states are ~34 KiB and fail
+# stake-proof decoding with "not enough data for fixed fields".
+
+participants:
+  - el_type: geth
+    el_image: ethpandaops/geth:glamsterdam-devnet-7
+    # Rocket Pool deploys large contracts (RocketMegapoolDelegate ~67M gas).
+    # Default Geth rpc.gascap is too low and rejects fixed high gas limits.
+    el_extra_params:
+      - --rpc.gascap=300000000
+      - --rpc.txfeecap=0
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:glamsterdam-devnet-7
+
+network_params:
+  # Mainnet SSZ dimensions so Smart Node can decode beacon states / build proofs.
+  preset: mainnet
+  # Activate Gloas (and EIP-7954 64 KiB max code size) at genesis.
+  # With gloas_fork_epoch: 1, early blocks still enforce the 24 KiB limit and
+  # Rocket Pool contracts (e.g. RocketDepositPool ~30 KiB) fail to deploy.
+  gloas_fork_epoch: 0
+  fulu_fork_epoch: 0
+  # Same as mainnet wall-clock; local net still has few validators so epochs are short.
+  seconds_per_slot: 12
+  # deploy_eip8282_contracts defaults to true when Gloas is scheduled
+  # deposit: 0x0000bFF46984e3725691FA540a8C7589300D8282
+  # exit:    0x000064D678505ad48F8cCb093BC65613800E8282
+
+# Keep additional services empty for a lean RP-focused devnet.
+# Add dora / assertoor / spamoor here if needed for exploration.
+additional_services: []

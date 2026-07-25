@@ -29,19 +29,42 @@ class Artifact {
         this.instance = instance;
     }
 
+    // Prefer eth_estimateGas; if it fails (common for large Glamsterdam creations),
+    // fall back to DEPLOY_GAS_LIMIT when set.
+    async deployWithGasFallback(factory, args) {
+        const fixed = process.env.DEPLOY_GAS_LIMIT
+            ? { gasLimit: BigInt(process.env.DEPLOY_GAS_LIMIT) }
+            : null;
+        try {
+            return await factory.deploy(...args);
+        } catch (err) {
+            const msg = (err && (err.shortMessage || err.message)) || String(err);
+            const estimateFailed =
+                /estimateGas|out of gas|code storage|missing revert data|cannot estimate|max code size/i.test(msg)
+                || (err && err.code === 'UNPREDICTABLE_GAS_LIMIT');
+            if (!fixed || !estimateFailed) {
+                throw err;
+            }
+            return await factory.deploy(...args, fixed);
+        }
+    }
+
     async newImmediate(...args) {
-        this.instance = await (await ethers.getContractFactory(this.name)).deploy(...args);
+        const factory = await ethers.getContractFactory(this.name);
+        this.instance = await this.deployWithGasFallback(factory, args);
         return this.instance;
     }
 
     async new(...args) {
-        this.instance = await (await ethers.getContractFactory(this.name)).deploy(...args);
+        const factory = await ethers.getContractFactory(this.name);
+        this.instance = await this.deployWithGasFallback(factory, args);
         await this.instance.waitForDeployment();
         return this.instance;
     }
 
     async clone(...args) {
-        const instance = await (await ethers.getContractFactory(this.name)).deploy(...args);
+        const factory = await ethers.getContractFactory(this.name);
+        const instance = await this.deployWithGasFallback(factory, args);
         await instance.waitForDeployment();
         return instance;
     }
