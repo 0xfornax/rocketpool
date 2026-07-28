@@ -37,9 +37,12 @@ const OUTPUT_FILE = process.env.ODAO_OUTPUT
 const DEFAULT_GUARDIAN_KEY = '0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31';
 const DEFAULT_MEMBER_KEY = '0x39725efee3fb28614de3bacaffe4cc4bd8c436257e2c8bb887c4b5c4be45e76d';
 
-const GAS_LIMIT = process.env.DEPLOY_GAS_LIMIT
-    ? BigInt(process.env.DEPLOY_GAS_LIMIT)
-    : 5_000_000n;
+// Geth rejects eth_sendRawTransaction when gasLimit > txfeecap/rpc gas cap
+// (default 16_777_216). Do NOT reuse DEPLOY_GAS_LIMIT (150M) for ordinary txs —
+// let the provider estimate, with a small safety multiplier.
+const TX_GAS_MULTIPLIER = Number(process.env.TX_GAS_MULTIPLIER || '1.2');
+// Soft ceiling under typical geth 2^24-1 cap (leave headroom).
+const TX_GAS_CAP = BigInt(process.env.TX_GAS_CAP || '16000000');
 
 function normalizeKey(k) {
     if (!k) return k;
@@ -70,6 +73,29 @@ async function tx(sendPromise, label) {
     return receipt;
 }
 
+/**
+ * Estimate gas for a contract method and clamp to a safe limit under geth's cap.
+ * @param {ethers.Contract} contract
+ * @param {string} method
+ * @param {any[]} args
+ * @param {ethers.Signer} signer
+ * @param {object} [extra] value etc.
+ */
+async function gasOverrides(contract, method, args, signer, extra = {}) {
+    const connected = contract.connect(signer);
+    let estimated;
+    try {
+        estimated = await connected[method].estimateGas(...args, extra);
+    } catch (e) {
+        // Fall back to a moderate fixed limit if estimate fails (e.g. state edge cases).
+        estimated = 3_000_000n;
+        console.log(`    (estimateGas failed for ${method}, using ${estimated}: ${e.shortMessage || e.message})`);
+    }
+    const withBuffer = BigInt(Math.ceil(Number(estimated) * TX_GAS_MULTIPLIER));
+    const gasLimit = withBuffer > TX_GAS_CAP ? TX_GAS_CAP : withBuffer;
+    return { ...extra, gasLimit };
+}
+
 async function main() {
     const providerUrl = process.env.PROVIDER_URL || 'http://127.0.0.1:8545';
     const guardianKey = normalizeKey(process.env.PRIVATE_KEY || DEFAULT_GUARDIAN_KEY);
@@ -88,8 +114,6 @@ async function main() {
     console.log(`  Guardian: ${guardian.address}`);
     console.log(`  Member:   ${member.address}`);
     console.log(`  Storage:  ${addr(deployment, 'RocketStorage')}`);
-
-    const overrides = { gasLimit: GAS_LIMIT };
 
     const nodeManager = new ethers.Contract(
         addr(deployment, 'RocketNodeManager'),
@@ -170,15 +194,27 @@ async function main() {
             );
         }
         await tx(
-            dummyRpl.connect(guardian).transfer(member.address, need, overrides),
+            dummyRpl.connect(guardian).transfer(
+                member.address,
+                need,
+                await gasOverrides(dummyRpl, 'transfer', [member.address, need], guardian),
+            ),
             'Transfer DRPL to member',
         );
+        const rplAddr = await rpl.getAddress();
         await tx(
-            dummyRpl.connect(member).approve(await rpl.getAddress(), need, overrides),
+            dummyRpl.connect(member).approve(
+                rplAddr,
+                need,
+                await gasOverrides(dummyRpl, 'approve', [rplAddr, need], member),
+            ),
             'Approve DRPL for swap',
         );
         await tx(
-            rpl.connect(member).swapTokens(need, overrides),
+            rpl.connect(member).swapTokens(
+                need,
+                await gasOverrides(rpl, 'swapTokens', [need], member),
+            ),
             'Swap DRPL → RPL',
         );
     } else {
@@ -188,7 +224,10 @@ async function main() {
     // Register node
     if (!(await nodeManager.getNodeExists(member.address))) {
         await tx(
-            nodeManager.connect(member).registerNode(timezone, overrides),
+            nodeManager.connect(member).registerNode(
+                timezone,
+                await gasOverrides(nodeManager, 'registerNode', [timezone], member),
+            ),
             `Register node (${timezone})`,
         );
     } else {
@@ -199,7 +238,12 @@ async function main() {
     const existingId = await daoTrusted.getMemberID(member.address);
     if (!existingId || existingId === '') {
         await tx(
-            daoTrusted.connect(guardian).bootstrapMember(memberId, memberUrl, member.address, overrides),
+            daoTrusted.connect(guardian).bootstrapMember(
+                memberId,
+                memberUrl,
+                member.address,
+                await gasOverrides(daoTrusted, 'bootstrapMember', [memberId, memberUrl, member.address], guardian),
+            ),
             `bootstrapMember(${memberId})`,
         );
     } else {
@@ -208,12 +252,19 @@ async function main() {
 
     // Join with RPL bond
     if (!(await daoTrusted.getMemberIsValid(member.address))) {
+        const actionsAddr = await daoActions.getAddress();
         await tx(
-            rpl.connect(member).approve(await daoActions.getAddress(), bond, overrides),
+            rpl.connect(member).approve(
+                actionsAddr,
+                bond,
+                await gasOverrides(rpl, 'approve', [actionsAddr, bond], member),
+            ),
             'Approve RPL bond for RocketDAONodeTrustedActions',
         );
         await tx(
-            daoActions.connect(member).actionJoin(overrides),
+            daoActions.connect(member).actionJoin(
+                await gasOverrides(daoActions, 'actionJoin', [], member),
+            ),
             'actionJoin (accept invite + lock bond)',
         );
     }

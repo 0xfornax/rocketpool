@@ -5,6 +5,11 @@
 # Usage (from repo root or any cwd):
 #   ENCLAVE=rp-devnet-7 ./scripts/devnet-7/generate-odao-config.sh
 #
+# Port resolution (stable by default):
+#   1. EL_HTTP / EL_WS / CL_HTTP if already set in the environment
+#   2. Fixed ports from kurtosis-ports.env (matches network_params.yaml port_publisher)
+#   3. Only if DISCOVER_PORTS=1: live `kurtosis port print` (legacy / multi-participant)
+#
 # Writes:
 #   deployments/odao-smartnode.env
 #   deployments/odao-user-settings.draft.yml
@@ -13,22 +18,26 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=kurtosis-ports.env
+source "${SCRIPT_DIR}/kurtosis-ports.env"
+
 ENCLAVE="${ENCLAVE:-rp-devnet-7}"
 ODAO_FILE="${ODAO_FILE:-${ROOT_DIR}/deployments/odao-local.json}"
 DEPLOYMENT_FILE="${DEPLOYMENT_FILE:-${ROOT_DIR}/deployments/latest.json}"
 OUT_ENV="${ROOT_DIR}/deployments/odao-smartnode.env"
 OUT_SETTINGS="${ROOT_DIR}/deployments/odao-user-settings.draft.yml"
+DISCOVER_PORTS="${DISCOVER_PORTS:-0}"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-[[ -f "$ODAO_FILE" ]] || die "missing ${ODAO_FILE}; run bootstrap-odao first"
 [[ -f "$DEPLOYMENT_FILE" ]] || die "missing ${DEPLOYMENT_FILE}"
-command -v kurtosis >/dev/null 2>&1 || die "kurtosis required to resolve ports"
+# oDAO meta is optional (SKIP_ODAO); ports + contract addresses still refresh.
 
 host_port() {
     local service="$1" port_name="$2"
     local line
+    command -v kurtosis >/dev/null 2>&1 || return 1
     line="$(kurtosis port print "$ENCLAVE" "$service" "$port_name" 2>/dev/null | tr -d '[:space:]' || true)"
     [[ -n "$line" ]] || return 1
     if [[ "$line" =~ ^https?:// ]]; then
@@ -43,6 +52,7 @@ host_port() {
 ws_port() {
     local service="$1" port_name="$2"
     local line
+    command -v kurtosis >/dev/null 2>&1 || return 1
     line="$(kurtosis port print "$ENCLAVE" "$service" "$port_name" 2>/dev/null | tr -d '[:space:]' || true)"
     [[ -n "$line" ]] || return 1
     if [[ "$line" =~ ^wss?:// ]]; then
@@ -56,27 +66,47 @@ ws_port() {
     fi
 }
 
-EL_HTTP="$(host_port el-1-geth-lighthouse rpc || true)"
-EL_WS="$(ws_port el-1-geth-lighthouse ws || true)"
-CL_HTTP="$(host_port cl-1-lighthouse-geth http || true)"
+# Prefer explicit env → fixed port_publisher defaults → optional kurtosis discovery.
+if [[ -z "${EL_HTTP:-}" ]]; then
+    if [[ "$DISCOVER_PORTS" == "1" ]]; then
+        EL_HTTP="$(host_port el-1-geth-lighthouse rpc || true)"
+    fi
+    EL_HTTP="${EL_HTTP:-$KURTOSIS_EL_HTTP_DEFAULT}"
+fi
+if [[ -z "${EL_WS:-}" ]]; then
+    if [[ "$DISCOVER_PORTS" == "1" ]]; then
+        EL_WS="$(ws_port el-1-geth-lighthouse ws || true)"
+    fi
+    EL_WS="${EL_WS:-$KURTOSIS_EL_WS_DEFAULT}"
+fi
+if [[ -z "${CL_HTTP:-}" ]]; then
+    if [[ "$DISCOVER_PORTS" == "1" ]]; then
+        CL_HTTP="$(host_port cl-1-lighthouse-geth http || true)"
+    fi
+    CL_HTTP="${CL_HTTP:-$KURTOSIS_CL_HTTP_DEFAULT}"
+fi
 
-[[ -n "${EL_HTTP}" ]] || die "could not resolve EL rpc port"
-[[ -n "${CL_HTTP}" ]] || die "could not resolve CL http port"
-# ws is optional; fall back from http if missing
+[[ -n "${EL_HTTP}" ]] || die "could not resolve EL rpc URL"
+[[ -n "${CL_HTTP}" ]] || die "could not resolve CL http URL"
 if [[ -z "${EL_WS}" ]]; then
     EL_WS="${EL_HTTP/http/ws}"
 fi
 
-ROCKET_STORAGE="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.RocketStorage)")"
+ROCKET_STORAGE="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.RocketStorage||'')")"
 RPL_TOKEN="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.RocketTokenRPL||'')")"
 RETH_TOKEN="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.RocketTokenRETH||'')")"
 MULTICALL="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.Multicall2||'')")"
 BALANCE_BATCHER="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.EthBalanceChecker||'')")"
 SIGNER_REGISTRY="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.RocketSignerRegistry||'')")"
-MEMBER_ADDR="$(node -e "const d=require('${ODAO_FILE}'); process.stdout.write(d.member.address)")"
-MEMBER_KEY="$(node -e "const d=require('${ODAO_FILE}'); process.stdout.write(d.member.privateKey)")"
+MEMBER_ADDR=""
+MEMBER_KEY=""
+if [[ -f "$ODAO_FILE" ]]; then
+    MEMBER_ADDR="$(node -e "const d=require('${ODAO_FILE}'); process.stdout.write((d.member&&d.member.address)||'')")"
+    MEMBER_KEY="$(node -e "const d=require('${ODAO_FILE}'); process.stdout.write((d.member&&d.member.privateKey)||'')")"
+fi
 CHAIN_ID="${CHAIN_ID:-3151908}"
 RP3_DIR="${RP3_DIR:-/srv/rocketpool3}"
+[[ -n "$ROCKET_STORAGE" ]] || die "RocketStorage missing from ${DEPLOYMENT_FILE}"
 
 log "Writing ${OUT_ENV}"
 cat >"$OUT_ENV" <<EOF
@@ -84,6 +114,9 @@ cat >"$OUT_ENV" <<EOF
 # Source before starting Smart Node so Network_Devnet picks up this deploy:
 #   set -a && source deployments/odao-smartnode.env && set +a
 # Or: export ROCKETPOOL_KURTOSIS_ENV=${OUT_ENV}
+#
+# Ports: fixed via scripts/devnet-7/kurtosis-ports.env (port_publisher).
+# Override with EL_HTTP / EL_WS / CL_HTTP, or DISCOVER_PORTS=1 for kurtosis print.
 ENCLAVE=${ENCLAVE}
 CHAIN_ID=${CHAIN_ID}
 ROCKETPOOL_DEVNET_CHAIN_ID=${CHAIN_ID}
@@ -114,7 +147,7 @@ cat >"$OUT_SETTINGS" <<EOF
 #   set -a && source deployments/odao-smartnode.env && set +a
 #   export ROCKETPOOL_KURTOSIS_ENV=${OUT_ENV}
 #
-# Native mode endpoints (Kurtosis host ports — re-run after enclave recreate):
+# Native mode endpoints (fixed host ports from kurtosis-ports.env):
 root:
   isNative: "true"
   network: ignored-use-smartnode
@@ -140,12 +173,18 @@ externalLighthouse:
 EOF
 
 # Keep /srv/rocketpool3 in sync when present (native Smart Node instance).
-if [[ -d "${RP3_DIR}" && -f "${RP3_DIR}/user-settings.yml" ]]; then
+if [[ -d "${RP3_DIR}" ]]; then
     log "Updating native Smart Node settings under ${RP3_DIR}"
-    node "${SCRIPT_DIR}/patch-native-settings.js" \
-        --settings "${RP3_DIR}/user-settings.yml" \
-        --env "${OUT_ENV}" \
-        --rp-dir "${RP3_DIR}" || log "warning: could not patch ${RP3_DIR}/user-settings.yml"
+    cp -f "${OUT_ENV}" "${RP3_DIR}/odao-smartnode.env" 2>/dev/null || true
+    ln -sfn "${OUT_ENV}" "${RP3_DIR}/ROCKETPOOL_KURTOSIS_ENV" 2>/dev/null || true
+    if [[ -f "${RP3_DIR}/user-settings.yml" ]]; then
+        node "${SCRIPT_DIR}/patch-native-settings.js" \
+            --settings "${RP3_DIR}/user-settings.yml" \
+            --env "${OUT_ENV}" \
+            --rp-dir "${RP3_DIR}" || log "warning: could not patch ${RP3_DIR}/user-settings.yml"
+    else
+        log "warning: ${RP3_DIR}/user-settings.yml missing; wrote ${OUT_SETTINGS} draft only"
+    fi
     if [[ -f "${RP3_DIR}/rocketpool/user-settings.yml" ]]; then
         node "${SCRIPT_DIR}/patch-native-settings.js" \
             --settings "${RP3_DIR}/rocketpool/user-settings.yml" \

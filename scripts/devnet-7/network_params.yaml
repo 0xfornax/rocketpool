@@ -3,12 +3,11 @@
 # Package: https://github.com/ethpandaops/ethereum-package
 #
 # Full multi-client matrix from the notes is intentionally omitted for a
-# lighter local environment. Images and fork timing match devnet-7.
+# lighter local environment. Images match devnet-7; fork schedule is local.
 #
-# IMPORTANT: use mainnet preset (not minimal). Smart Node Gloas SSZ types and
+# IMPORTANT: use mainnet preset (not minimal). Smart Node SSZ types and
 # BeaconStateVerifier historical-root gindices assume mainnet vector widths
-# (SLOTS_PER_HISTORICAL_ROOT=8192, etc.). Minimal states are ~34 KiB and fail
-# stake-proof decoding with "not enough data for fixed fields".
+# (SLOTS_PER_HISTORICAL_ROOT=8192, etc.).
 
 participants:
   - el_type: geth
@@ -24,12 +23,20 @@ participants:
 network_params:
   # Mainnet SSZ dimensions so Smart Node can decode beacon states / build proofs.
   preset: mainnet
-  # Activate Gloas (and EIP-7954 64 KiB max code size) at genesis.
-  # With gloas_fork_epoch: 1, early blocks still enforce the 24 KiB limit and
-  # Rocket Pool contracts (e.g. RocketDepositPool ~30 KiB) fail to deploy.
-  gloas_fork_epoch: 0
+  # Genesis on Fulu (Electra+Fulu already active). Gloas (ePBS / CL SSZ changes)
+  # is delayed so the master RP stack can be deployed and exercised first — matching
+  # production, where megapool (master) is already live before the Gloas upgrade.
+  #
+  # Mainnet preset: SECONDS_PER_SLOT=12, SLOTS_PER_EPOCH=32 → epoch ≈ 384s (~6.4m).
+  # gloas_fork_epoch: 6 → Gloas at slot 128 (~25.6 minutes after genesis).
+  # After Gloas, deploy.sh runs the v1.5 upgrade.
   fulu_fork_epoch: 0
-  # Same as mainnet wall-clock; local net still has few validators so epochs are short.
+  electra_fork_epoch: 0
+  deneb_fork_epoch: 0
+  capella_fork_epoch: 0
+  bellatrix_fork_epoch: 0
+  altair_fork_epoch: 0
+  gloas_fork_epoch: 6
   seconds_per_slot: 12
   # deploy_eip8282_contracts defaults to true when Gloas is scheduled
   # deposit: 0x0000bFF46984e3725691FA540a8C7589300D8282
@@ -38,3 +45,26 @@ network_params:
 # Keep additional services empty for a lean RP-focused devnet.
 # Add dora / assertoor / spamoor here if needed for exploration.
 additional_services: []
+
+# Fixed host ports so EL/CL URLs survive enclave recreate (no random 32xxx).
+# ethereum-package assigns MAX_PORTS_PER_* consecutive ports per participant
+# starting at public_port_start. With a single participant:
+#
+#   EL (start 32000): discovery=32000, engine=32001, metrics=32002,
+#                     rpc=32003, ws=32004
+#   CL (start 33000): discovery=33000, http=33001, metrics=33002, quic=33003
+#
+# So stable endpoints are:
+#   EL_HTTP = http://127.0.0.1:32003
+#   EL_WS   = ws://127.0.0.1:32004
+#   CL_HTTP = http://127.0.0.1:33001
+#
+# Requires free ports; fails if something else is bound. Override starts via
+# env before launch if needed (edit here).
+port_publisher:
+  el:
+    enabled: true
+    public_port_start: 32000
+  cl:
+    enabled: true
+    public_port_start: 33000

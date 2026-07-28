@@ -101,9 +101,10 @@ function main() {
     if (!fs.existsSync(args.settings)) throw new Error(`missing ${args.settings}`);
 
     const env = loadEnvFile(args.env);
-    const elHttp = env.EL_HTTP || process.env.EL_HTTP || '';
-    const elWs = env.EL_WS || process.env.EL_WS || '';
-    const clHttp = env.CL_HTTP || process.env.CL_HTTP || '';
+    // Defaults match scripts/devnet-7/kurtosis-ports.env + network_params.yaml port_publisher.
+    const elHttp = env.EL_HTTP || process.env.EL_HTTP || 'http://127.0.0.1:32003';
+    const elWs = env.EL_WS || process.env.EL_WS || 'ws://127.0.0.1:32004';
+    const clHttp = env.CL_HTTP || process.env.CL_HTTP || 'http://127.0.0.1:33001';
     if (!elHttp || !clHttp) {
         throw new Error('EL_HTTP and CL_HTTP required (via --env or environment)');
     }
