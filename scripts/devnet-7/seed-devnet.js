@@ -7,6 +7,8 @@
  *   1. Send SEED_ETH (default 100) to SEED_ADDRESS
  *   2. Swap dummy RPL → RPL and transfer SEED_RPL (default 10000) to SEED_ADDRESS
  *   3. Deposit DEPOSIT_POOL_ETH (default 500) into RocketDepositPool
+ *   4. Deposit REWARDS_POOL_RPL (default 1000) into RocketVault for rocketRewardsPool
+ *      so watchtower can submit a rewards tree before the first 1-day RPL inflation mint
  *
  * Usage:
  *   PROVIDER_URL=http://127.0.0.1:PORT \
@@ -33,6 +35,11 @@ const DEFAULT_SEED_ADDRESS = '0xc7EBC35C761bFbaE449973E226CE3295B9B7f996';
 const DEFAULT_SEED_ETH = '100';
 const DEFAULT_SEED_RPL = '10000';
 const DEFAULT_DEPOSIT_POOL_ETH = '500';
+// RPL assigned to rocketRewardsPool in the vault. Pending rewards =
+// vault balance for the pool + unminted inflation. Inflation interval is a
+// hardcoded 1 day on RocketTokenRPL, so short claim intervals (e.g. 20 min)
+// need a seeded vault balance or tree gen fails with "no pending RPL rewards".
+const DEFAULT_REWARDS_POOL_RPL = '1000';
 
 const ERC20_ABI = [
     'function balanceOf(address) view returns (uint256)',
@@ -54,10 +61,19 @@ const DEPOSIT_POOL_ABI = [
 const DAO_PROTOCOL_ABI = [
     'function bootstrapSettingUint(string settingContractName, string settingPath, uint256 value)',
     'function getBootstrapModeDisabled() view returns (bool)',
+    'function bootstrapEnableGovernance()',
 ];
 const DEPOSIT_SETTINGS_ABI = [
     'function getMaximumDepositPoolSize() view returns (uint256)',
     'function getDepositEnabled() view returns (bool)',
+];
+const VAULT_ABI = [
+    'function balanceOfToken(string networkContractName, address tokenAddress) view returns (uint256)',
+    'function depositToken(string networkContractName, address tokenAddress, uint256 amount)',
+];
+const REWARDS_POOL_ABI = [
+    'function getPendingRPLRewards() view returns (uint256)',
+    'function getRPLBalance() view returns (uint256)',
 ];
 
 function normalizeKey(k) {
@@ -88,6 +104,7 @@ async function main() {
     const seedEth = ethers.parseEther(process.env.SEED_ETH || DEFAULT_SEED_ETH);
     const seedRpl = ethers.parseEther(process.env.SEED_RPL || DEFAULT_SEED_RPL);
     const depositPoolEth = ethers.parseEther(process.env.DEPOSIT_POOL_ETH || DEFAULT_DEPOSIT_POOL_ETH);
+    const rewardsPoolRpl = ethers.parseEther(process.env.REWARDS_POOL_RPL || DEFAULT_REWARDS_POOL_RPL);
 
     const deployment = loadDeployment();
     const provider = new ethers.JsonRpcProvider(providerUrl);
@@ -98,11 +115,31 @@ async function main() {
     const rpl = new ethers.Contract(addr(deployment, 'RocketTokenRPL'), RPL_ABI, guardian);
     const depositPool = new ethers.Contract(addr(deployment, 'RocketDepositPool'), DEPOSIT_POOL_ABI, guardian);
     const daoProtocol = new ethers.Contract(addr(deployment, 'RocketDAOProtocol'), DAO_PROTOCOL_ABI, guardian);
+    const vault = new ethers.Contract(addr(deployment, 'RocketVault'), VAULT_ABI, guardian);
+    const rewardsPool = new ethers.Contract(addr(deployment, 'RocketRewardsPool'), REWARDS_POOL_ABI, provider);
     const depositSettings = new ethers.Contract(
         addr(deployment, 'RocketDAOProtocolSettingsDeposit'),
         DEPOSIT_SETTINGS_ABI,
         provider,
     );
+
+    // Min allowed by RocketDAOProtocolSettingsMegapool.setSettingUint guardrail.
+    // Mainnet default is 112; with short kurtosis exit timelines withdrawable_epoch
+    // is often < 112, and notifyExit does:
+    //   if (recentEpoch > withdrawableEpoch - notifyThreshold) { fine }
+    // which underflows (silent panic) when withdrawableEpoch < threshold.
+    // DevnetPostSaturn uses 19 for the same reason.
+    const notifyThreshold = BigInt(process.env.NOTIFY_THRESHOLD || '19');
+    // oDAO prices/balances submit interval (seconds). Mainnet default is 1 day;
+    // 300s keeps watchtower useful on short-lived Kurtosis chains.
+    // Requires Kurtosis SettingsNetwork guardrail patch (prepare-master-worktree)
+    // because stock contracts enforce balances.frequency >= 1 hour.
+    const submitFrequency = BigInt(process.env.SUBMIT_FREQUENCY_SECS || '300');
+    // Rewards claim interval = periods × balances.frequency.
+    // Default periods=4 → 4×300s = 20 minutes (mainnet is 28×1 day).
+    // Path is the packed storage key suffix used by SettingsRewards / pDAO:
+    //   encodePacked("rewards.claims", "periods") → "rewards.claimsperiods"
+    const rewardsClaimPeriods = BigInt(process.env.REWARDS_CLAIM_PERIODS || '4');
 
     console.log('Seed Kurtosis devnet');
     console.log(`  RPC:            ${providerUrl}`);
@@ -111,7 +148,204 @@ async function main() {
     console.log(`  Seed address:   ${seedAddress}`);
     console.log(`  Seed ETH:       ${ethers.formatEther(seedEth)}`);
     console.log(`  Seed RPL:       ${ethers.formatEther(seedRpl)}`);
+    console.log(`  Rewards pool RPL: ${ethers.formatEther(rewardsPoolRpl)} (vault → rocketRewardsPool)`);
     console.log(`  Deposit pool:   ${ethers.formatEther(depositPoolEth)} ETH`);
+    console.log(`  notify.threshold: ${notifyThreshold}`);
+    console.log(`  submit frequency: ${submitFrequency}s (balances + prices)`);
+    console.log(`  rewards periods:  ${rewardsClaimPeriods} (interval ${rewardsClaimPeriods * submitFrequency}s)`);
+
+    // --- 0a) Enable on-chain pDAO proposals (bootstrapEnableGovernance) ---
+    // Without this, createProposal reverts with "DAO has not been enabled".
+    // Leaves bootstrap mode open so further guardian bootstraps still work.
+    {
+        const storage = new ethers.Contract(addr(deployment, 'RocketStorage'), [
+            'function getUint(bytes32) view returns (uint256)',
+        ], provider);
+        const enabledKey = ethers.keccak256(ethers.toUtf8Bytes('protocol.dao.enabled.block'));
+        const enabledBlock = await storage.getUint(enabledKey);
+        if (enabledBlock > 0n) {
+            console.log(`  - pDAO governance already enabled at block ${enabledBlock}`);
+        } else {
+            const bootstrapDisabled = await daoProtocol.getBootstrapModeDisabled();
+            if (bootstrapDisabled) {
+                throw new Error('pDAO governance is disabled and bootstrap mode is closed');
+            }
+            console.log('  - Enabling pDAO on-chain governance (bootstrapEnableGovernance)...');
+            const tx = await daoProtocol.bootstrapEnableGovernance();
+            await tx.wait();
+            const after = await storage.getUint(enabledKey);
+            if (after === 0n) {
+                throw new Error('protocol.dao.enabled.block still 0 after bootstrapEnableGovernance');
+            }
+            console.log(`    ok ${tx.hash} (enabled at block ${after})`);
+        }
+    }
+
+    // --- 0b) Megapool notify.threshold (must be low enough for young chains) ---
+    {
+        const settingsAddr = addr(deployment, 'RocketDAOProtocolSettingsMegapool');
+        const settings = new ethers.Contract(settingsAddr, [
+            'function getNotifyThreshold() view returns (uint256)',
+        ], provider);
+        const current = await settings.getNotifyThreshold();
+        if (current === notifyThreshold) {
+            console.log(`  - notify.threshold already ${current}`);
+        } else {
+            const bootstrapDisabled = await daoProtocol.getBootstrapModeDisabled();
+            if (bootstrapDisabled) {
+                throw new Error(
+                    `notify.threshold is ${current} (want ${notifyThreshold}) but bootstrap mode is closed`,
+                );
+            }
+            console.log(`  - Setting notify.threshold ${current} → ${notifyThreshold}...`);
+            const tx = await daoProtocol.bootstrapSettingUint(
+                'rocketDAOProtocolSettingsMegapool',
+                'notify.threshold',
+                notifyThreshold,
+            );
+            await tx.wait();
+            const after = await settings.getNotifyThreshold();
+            if (after !== notifyThreshold) {
+                throw new Error(`notify.threshold still ${after} after bootstrap`);
+            }
+            console.log(`    ok ${tx.hash}`);
+        }
+    }
+
+    // --- 0c) oDAO prices/balances submit frequency (default 300s for Kurtosis) ---
+    {
+        const settingsAddr = addr(deployment, 'RocketDAOProtocolSettingsNetwork');
+        const settings = new ethers.Contract(settingsAddr, [
+            'function getSubmitBalancesFrequency() view returns (uint256)',
+            'function getSubmitPricesFrequency() view returns (uint256)',
+        ], provider);
+        const paths = [
+            {
+                path: 'network.submit.balances.frequency',
+                getter: () => settings.getSubmitBalancesFrequency(),
+                label: 'balances',
+            },
+            {
+                path: 'network.submit.prices.frequency',
+                getter: () => settings.getSubmitPricesFrequency(),
+                label: 'prices',
+            },
+        ];
+        for (const { path: settingPath, getter, label } of paths) {
+            const current = await getter();
+            if (current === submitFrequency) {
+                console.log(`  - ${settingPath} already ${current}s`);
+                continue;
+            }
+            const bootstrapDisabled = await daoProtocol.getBootstrapModeDisabled();
+            if (bootstrapDisabled) {
+                throw new Error(
+                    `${settingPath} is ${current}s (want ${submitFrequency}s) but bootstrap mode is closed`,
+                );
+            }
+            console.log(`  - Setting ${settingPath} ${current}s → ${submitFrequency}s...`);
+            try {
+                const tx = await daoProtocol.bootstrapSettingUint(
+                    'rocketDAOProtocolSettingsNetwork',
+                    settingPath,
+                    submitFrequency,
+                );
+                await tx.wait();
+            } catch (e) {
+                const msg = e.shortMessage || e.message || String(e);
+                throw new Error(
+                    `Failed to set ${settingPath} to ${submitFrequency}s: ${msg}\n`
+                    + `  Stock SettingsNetwork requires balances.frequency >= 1 hour.\n`
+                    + `  Kurtosis baseline deploy patches that guardrail via prepare-master-worktree.sh;\n`
+                    + `  re-run a CLEAN deploy so the patched SettingsNetwork is on-chain, or set\n`
+                    + `  SUBMIT_FREQUENCY_SECS=3600 for the stock minimum.`,
+                );
+            }
+            const after = await getter();
+            if (after !== submitFrequency) {
+                throw new Error(`${settingPath} still ${after}s after bootstrap`);
+            }
+            console.log(`    ok (${label})`);
+        }
+    }
+
+    // --- 0d) Rewards claim interval periods (× balances frequency = wall-clock interval) ---
+    {
+        const settingsAddr = addr(deployment, 'RocketDAOProtocolSettingsRewards');
+        const settings = new ethers.Contract(settingsAddr, [
+            'function getRewardsClaimIntervalPeriods() view returns (uint256)',
+            'function getRewardsClaimIntervalTime() view returns (uint256)',
+        ], provider);
+        const current = await settings.getRewardsClaimIntervalPeriods();
+        if (current === rewardsClaimPeriods) {
+            const t = await settings.getRewardsClaimIntervalTime();
+            console.log(`  - rewards.claimsperiods already ${current} (interval ${t}s)`);
+        } else {
+            const bootstrapDisabled = await daoProtocol.getBootstrapModeDisabled();
+            if (bootstrapDisabled) {
+                throw new Error(
+                    `rewards.claimsperiods is ${current} (want ${rewardsClaimPeriods}) but bootstrap mode is closed`,
+                );
+            }
+            console.log(`  - Setting rewards.claimsperiods ${current} → ${rewardsClaimPeriods}...`);
+            const tx = await daoProtocol.bootstrapSettingUint(
+                'rocketDAOProtocolSettingsRewards',
+                'rewards.claimsperiods',
+                rewardsClaimPeriods,
+            );
+            await tx.wait();
+            const after = await settings.getRewardsClaimIntervalPeriods();
+            if (after !== rewardsClaimPeriods) {
+                throw new Error(`rewards.claimsperiods still ${after} after bootstrap`);
+            }
+            const intervalTime = await settings.getRewardsClaimIntervalTime();
+            console.log(`    ok ${tx.hash} (claim interval ${intervalTime}s)`);
+        }
+    }
+
+    // --- 0e) RPL inflation start (must be near "now" for rewards trees on Kurtosis) ---
+    // Watchtower treats rewards.pool.claim.interval.time.start == 0 as "use RPL
+    // inflation start". Deploy defaults set inflation to host-now + 14 days, so
+    // intervalsPassed stays 0 and submit-rewards exits silently until then.
+    // Guardrail: start must be > block.timestamp and not already started.
+    {
+        const settingsAddr = addr(deployment, 'RocketDAOProtocolSettingsInflation');
+        const settings = new ethers.Contract(settingsAddr, [
+            'function getInflationIntervalStartTime() view returns (uint256)',
+        ], provider);
+        const current = await settings.getInflationIntervalStartTime();
+        const latest = await provider.getBlock('latest');
+        const now = BigInt(latest.timestamp);
+        // Delay a few slots so the set tx itself is still "in the future".
+        const delay = BigInt(process.env.INFLATION_START_DELAY_SECS || '60');
+        const target = now + delay;
+        if (current > 0n && current <= now) {
+            console.log(`  - rpl.inflation.interval.start already started at ${current} (chain now ${now})`);
+        } else if (current > now && current <= now + 300n) {
+            console.log(`  - rpl.inflation.interval.start already soon (${current - now}s)`);
+        } else {
+            const bootstrapDisabled = await daoProtocol.getBootstrapModeDisabled();
+            if (bootstrapDisabled) {
+                throw new Error(
+                    `rpl.inflation.interval.start is ${current} (want ~${target}) but bootstrap mode is closed`,
+                );
+            }
+            console.log(`  - Setting rpl.inflation.interval.start ${current} → ${target} (now+${delay}s)...`);
+            const tx = await daoProtocol.bootstrapSettingUint(
+                'rocketDAOProtocolSettingsInflation',
+                'rpl.inflation.interval.start',
+                target,
+            );
+            await tx.wait();
+            const after = await settings.getInflationIntervalStartTime();
+            console.log(`    ok ${tx.hash} (start ${after})`);
+            console.log(
+                `    NOTE: first rewards interval ends ~${rewardsClaimPeriods * submitFrequency}s after start; `
+                + `RPL inflation mint interval is still 1 day (token constant) — `
+                + `seed funds rocketRewardsPool so pending RPL is non-zero before then.`,
+            );
+        }
+    }
 
     // --- 1) ETH to seed address ---
     {
@@ -125,27 +359,28 @@ async function main() {
         console.log(`    ok ${tx.hash}`);
     }
 
-    // --- 2) RPL to seed address (dummy → swap → transfer) ---
+    // --- 2) RPL to seed address + rewards pool (dummy → swap → transfer / vault deposit) ---
     {
+        const rplNeeded = seedRpl + rewardsPoolRpl;
         let dummyBal = await dummyRpl.balanceOf(guardian.address);
-        if (dummyBal < seedRpl) {
+        if (dummyBal < rplNeeded) {
             // Guardian is usually minted the full fixed supply at deploy; mint if artifact supports it.
             console.log(`  - Guardian DRPL low (${ethers.formatEther(dummyBal)}); attempting mint...`);
             try {
-                const mintTx = await dummyRpl.mint(guardian.address, seedRpl);
+                const mintTx = await dummyRpl.mint(guardian.address, rplNeeded);
                 await mintTx.wait();
                 dummyBal = await dummyRpl.balanceOf(guardian.address);
             } catch (e) {
                 throw new Error(`Insufficient DRPL for seed and mint failed: ${e.shortMessage || e.message}`);
             }
         }
-        console.log(`  - Approve DRPL for RPL swap (${ethers.formatEther(seedRpl)})...`);
-        let tx = await dummyRpl.approve(await rpl.getAddress(), seedRpl);
+        console.log(`  - Approve DRPL for RPL swap (${ethers.formatEther(rplNeeded)})...`);
+        let tx = await dummyRpl.approve(await rpl.getAddress(), rplNeeded);
         await tx.wait();
         console.log(`    ok ${tx.hash}`);
 
         console.log('  - Swap DRPL → RPL...');
-        tx = await rpl.swapTokens(seedRpl);
+        tx = await rpl.swapTokens(rplNeeded);
         await tx.wait();
         console.log(`    ok ${tx.hash}`);
 
@@ -153,6 +388,34 @@ async function main() {
         tx = await rpl.transfer(seedAddress, seedRpl);
         await tx.wait();
         console.log(`    ok ${tx.hash}`);
+
+        // Fund rocketRewardsPool so getPendingRPLRewards() > 0 before the first
+        // 1-day inflation interval elapses (required for Merkle tree generation).
+        if (rewardsPoolRpl > 0n) {
+            const rplAddr = await rpl.getAddress();
+            const currentPool = await vault.balanceOfToken('rocketRewardsPool', rplAddr);
+            if (currentPool >= rewardsPoolRpl) {
+                console.log(
+                    `  - rocketRewardsPool already has ${ethers.formatEther(currentPool)} RPL in vault `
+                    + `(want ≥ ${ethers.formatEther(rewardsPoolRpl)}); skip deposit`,
+                );
+            } else {
+                const toDeposit = rewardsPoolRpl - currentPool;
+                console.log(
+                    `  - Deposit ${ethers.formatEther(toDeposit)} RPL into vault for rocketRewardsPool...`,
+                );
+                tx = await rpl.approve(await vault.getAddress(), toDeposit);
+                await tx.wait();
+                tx = await vault.depositToken('rocketRewardsPool', rplAddr, toDeposit);
+                await tx.wait();
+                const pending = await rewardsPool.getPendingRPLRewards();
+                const poolBal = await rewardsPool.getRPLBalance();
+                console.log(
+                    `    ok ${tx.hash} (pool RPL ${ethers.formatEther(poolBal)}, `
+                    + `pending ${ethers.formatEther(pending)})`,
+                );
+            }
+        }
     }
 
     // --- 3) User deposit into deposit pool ---
@@ -188,10 +451,34 @@ async function main() {
         if (gBal < depositPoolEth) {
             throw new Error(`Guardian has only ${ethers.formatEther(gBal)} ETH; need ${ethers.formatEther(depositPoolEth)} for deposit pool`);
         }
-        console.log(`  - Depositing ${ethers.formatEther(depositPoolEth)} ETH into RocketDepositPool...`);
-        const tx = await depositPool.deposit({ value: depositPoolEth });
-        await tx.wait();
-        console.log(`    ok ${tx.hash}`);
+        // Full deposit path (mint rETH + vault + optional assign) costs ~1.5–2.5M gas.
+        // Some geth builds under-estimate; a ~281k limit OOGs with a bare CALL_EXCEPTION.
+        const gasFloor = BigInt(process.env.DEPOSIT_GAS_LIMIT || '5000000');
+        let gasLimit = gasFloor;
+        try {
+            const estimated = await depositPool.deposit.estimateGas({ value: depositPoolEth });
+            const buffered = (estimated * 150n) / 100n;
+            if (buffered > gasLimit) gasLimit = buffered;
+            console.log(`  - Depositing ${ethers.formatEther(depositPoolEth)} ETH into RocketDepositPool...`);
+            console.log(`    estimateGas=${estimated} gasLimit=${gasLimit}`);
+        } catch (e) {
+            console.log(`  - Depositing ${ethers.formatEther(depositPoolEth)} ETH into RocketDepositPool...`);
+            console.log(`    (estimateGas failed: ${e.shortMessage || e.message}; using gasLimit=${gasLimit})`);
+            // Preflight for a useful revert string when estimate fails
+            try {
+                await depositPool.deposit.staticCall({ value: depositPoolEth });
+            } catch (e2) {
+                throw new Error(
+                    `deposit() would revert: ${e2.reason || e2.shortMessage || e2.message}`,
+                );
+            }
+        }
+        const tx = await depositPool.deposit({ value: depositPoolEth, gasLimit });
+        const rc = await tx.wait();
+        if (rc.status !== 1) {
+            throw new Error(`deposit() failed status=${rc.status} gasUsed=${rc.gasUsed} (likely OOG if gasUsed≈gasLimit)`);
+        }
+        console.log(`    ok ${tx.hash} gasUsed=${rc.gasUsed}`);
         const after = await depositPool.getBalance();
         console.log(`    pool balance now ${ethers.formatEther(after)} ETH`);
     }

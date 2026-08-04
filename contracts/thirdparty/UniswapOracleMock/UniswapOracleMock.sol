@@ -2,16 +2,27 @@
 pragma solidity 0.8.30;
 
 /**
-    @dev Mock contract to return some valid values for RPL Uniswap TWAP oracle
+    @dev Mock Uniswap V3 pool `observe` for local Kurtosis / Smart Node RPL TWAP.
+         Smart Node calls observe([lookbackSeconds, 0]) and requires two tick
+         cumulatives. A constant tick of 0 yields rplPrice = 1e18 (1 ETH per RPL)
+         in the SN formula — fine for oDAO price submissions on devnets.
 */
 contract UniswapOracleMock {
-    function observe(uint32[] calldata)
-    external pure returns (int56[] memory, uint160[] memory)
+    /// @notice Uniswap V3-compatible observe. Length of outputs matches input.
+    function observe(uint32[] calldata secondsAgos)
+        external
+        pure
+        returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidityCumulativeX128s)
     {
-        int56[] memory tickCumulatives = new int56[](1);
-        tickCumulatives[0] = 6108781823772;
-        uint160[] memory secondsPerLiquidityCumulativeX128s = new uint160[](1);
-        secondsPerLiquidityCumulativeX128s[0] = 356275638166222587133100043722184061953921;
+        uint256 n = secondsAgos.length;
+        require(n > 0, "empty secondsAgos");
+        tickCumulatives = new int56[](n);
+        secondsPerLiquidityCumulativeX128s = new uint160[](n);
+        // Constant tick = 0: any (cum[i]-cum[j]) / dt = 0 regardless of secondsAgos.
+        for (uint256 i = 0; i < n; i++) {
+            tickCumulatives[i] = 0;
+            secondsPerLiquidityCumulativeX128s[i] = 1;
+        }
         return (tickCumulatives, secondsPerLiquidityCumulativeX128s);
     }
 }

@@ -56,6 +56,10 @@ function main() {
     const multicall = d.addresses.Multicall2 || d.addresses.Multicall || '';
     const batcher = d.addresses.EthBalanceChecker || '';
     const signer = d.addresses.RocketSignerRegistry || '';
+    const twap = d.addresses.UniswapOracleMock
+        || d.addresses.RplTwapPool
+        || d.addresses.RPLTwapPool
+        || '';
 
     let src = fs.readFileSync(SMARTNODE_CONFIG, 'utf8');
     src = replaceConst(src, 'kurtosisDevnetChainIDDefault', CHAIN_ID);
@@ -71,6 +75,26 @@ function main() {
     if (signer) {
         src = replaceConst(src, 'kurtosisDevnetSignerRegistryAddressDefault', signer);
     }
+    if (twap) {
+        // Optional const — added when Smart Node has kurtosisDevnetRplTwapPoolAddressDefault
+        try {
+            src = replaceConst(src, 'kurtosisDevnetRplTwapPoolAddressDefault', twap);
+        } catch (e) {
+            // Fall back: patch the Network_Devnet entry in rplTwapPoolAddress map
+            const reMap = /(config\.Network_Devnet:\s*)"[^"]*"(\s*,\s*\n\s*config\.Network_Testnet:.*\n\s*\},?\s*\n\s*multicallAddress)/m;
+            // Prefer a tighter match on the rplTwapPoolAddress block only
+            const reTwap = /(rplTwapPoolAddress:\s*map\[config\.Network\]string\{[\s\S]*?config\.Network_Devnet:\s*)"[^"]*"/;
+            if (reTwap.test(src)) {
+                src = src.replace(reTwap, `$1"${twap}"`);
+            } else if (reMap.test(src)) {
+                src = src.replace(reMap, `$1"${twap}"$2`);
+            } else {
+                throw new Error(
+                    `could not set TWAP address in ${SMARTNODE_CONFIG}: ${e.message}`,
+                );
+            }
+        }
+    }
 
     fs.writeFileSync(SMARTNODE_CONFIG, src, 'utf8');
     console.log('Updated Smart Node Kurtosis Devnet defaults:');
@@ -82,6 +106,7 @@ function main() {
     console.log(`  multicall:${multicall || '(unchanged)'}`);
     console.log(`  batcher:  ${batcher || '(unchanged)'}`);
     console.log(`  signer:   ${signer || '(unchanged)'}`);
+    console.log(`  twap:     ${twap || '(unchanged)'}`);
 }
 
 main();

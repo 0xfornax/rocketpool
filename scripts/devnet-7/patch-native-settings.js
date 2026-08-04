@@ -95,6 +95,36 @@ function setRootField(text, field, value) {
     return setSectionField(text, 'root', field, value);
 }
 
+/**
+ * Resolve a prices/balances submission reference timestamp at/after beacon
+ * genesis. Mainnet default (1713420000) is before Kurtosis genesis and makes
+ * watchtower compute a negative time-since-genesis → bogus huge slot.
+ */
+function resolveSubmissionReferenceTimestamp(clHttp, env) {
+    if (process.env.PRICE_BALANCE_SUBMISSION_REFERENCE_TIMESTAMP) {
+        return String(process.env.PRICE_BALANCE_SUBMISSION_REFERENCE_TIMESTAMP);
+    }
+    if (env.GENESIS_BLOCK_TIMESTAMP && env.GENESIS_BLOCK_TIMESTAMP !== '0') {
+        return String(env.GENESIS_BLOCK_TIMESTAMP);
+    }
+    if (process.env.GENESIS_BLOCK_TIMESTAMP && process.env.GENESIS_BLOCK_TIMESTAMP !== '0') {
+        return String(process.env.GENESIS_BLOCK_TIMESTAMP);
+    }
+    // Fetch from beacon API
+    try {
+        const { execFileSync } = require('child_process');
+        const out = execFileSync('curl', ['-sf', `${clHttp}/eth/v1/beacon/genesis`], {
+            encoding: 'utf8',
+            timeout: 10000,
+        });
+        const m = out.match(/"genesis_time"\s*:\s*"(\d+)"/);
+        if (m) return m[1];
+    } catch (e) {
+        // fall through
+    }
+    return null;
+}
+
 function main() {
     const args = parseArgs(process.argv);
     if (!args.settings) throw new Error('--settings required');
@@ -131,6 +161,18 @@ function main() {
     text = setSectionField(text, 'smartnode', 'projectName', path.basename(rpDir));
     text = setSectionField(text, 'smartnode', 'rewardsTreeMode', 'generate');
 
+    // P/B submission schedule must start at/after this chain's genesis (not mainnet 6AM epoch).
+    const pbRef = resolveSubmissionReferenceTimestamp(clHttp, env);
+    if (pbRef) {
+        text = setSectionField(text, 'smartnode', 'priceBalanceSubmissionReferenceTimestamp', `"${pbRef}"`);
+    }
+
+    // Kurtosis geth runs with el_storage_type/archive + --gcmode=archive. Point
+    // Smart Node Archive EC at the same URL so watchtower historical eth_calls
+    // (balances/prices at past blocks) use an archive-capable endpoint. Empty
+    // archiveECUrl makes GetBestApiClient fail hard when primary state is missing.
+    text = setSectionField(text, 'smartnode', 'archiveECUrl', elHttp);
+
     // native mode endpoints (primary for isNative=true)
     text = setSectionField(text, 'native', 'ecHttpUrl', elHttp);
     text = setSectionField(text, 'native', 'ccHttpUrl', clHttp);
@@ -150,6 +192,12 @@ function main() {
     console.log(`  native.ecHttpUrl=${elHttp}`);
     console.log(`  native.ccHttpUrl=${clHttp}`);
     console.log(`  dataPath=${dataPath}`);
+    if (pbRef) {
+        console.log(`  priceBalanceSubmissionReferenceTimestamp=${pbRef} (chain genesis-aligned)`);
+    } else {
+        console.log('  warning: could not resolve genesis for priceBalanceSubmissionReferenceTimestamp');
+    }
+    console.log(`  archiveECUrl=${elHttp} (same as primary; requires Kurtosis geth archive)`);
 }
 
 main();

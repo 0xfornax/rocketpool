@@ -98,6 +98,7 @@ RETH_TOKEN="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.wri
 MULTICALL="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.Multicall2||'')")"
 BALANCE_BATCHER="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.EthBalanceChecker||'')")"
 SIGNER_REGISTRY="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.RocketSignerRegistry||'')")"
+RPL_TWAP="$(node -e "const d=require('${DEPLOYMENT_FILE}'); process.stdout.write(d.addresses.UniswapOracleMock||d.addresses.RplTwapPool||'')")"
 MEMBER_ADDR=""
 MEMBER_KEY=""
 if [[ -f "$ODAO_FILE" ]]; then
@@ -132,6 +133,8 @@ BALANCE_BATCHER_ADDRESS=${BALANCE_BATCHER}
 ROCKETPOOL_DEVNET_BALANCE_BATCHER_ADDRESS=${BALANCE_BATCHER}
 SIGNER_REGISTRY_ADDRESS=${SIGNER_REGISTRY}
 ROCKETPOOL_DEVNET_SIGNER_REGISTRY_ADDRESS=${SIGNER_REGISTRY}
+RPL_TWAP_POOL_ADDRESS=${RPL_TWAP}
+ROCKETPOOL_DEVNET_RPL_TWAP_POOL_ADDRESS=${RPL_TWAP}
 EL_HTTP=${EL_HTTP}
 EL_WS=${EL_WS}
 CL_HTTP=${CL_HTTP}
@@ -202,6 +205,7 @@ log "  rETH:          ${RETH_TOKEN}"
 log "  Multicall2:    ${MULTICALL:-'(not deployed yet — run deploy-helpers.js)'}"
 log "  BalanceBatcher:${BALANCE_BATCHER:-'(not deployed yet)'}"
 log "  SignerRegistry:${SIGNER_REGISTRY:-'(not deployed yet)'}"
+log "  RPL TWAP pool: ${RPL_TWAP:-'(not deployed yet — run deploy-helpers.js)'}"
 log "  EL HTTP:       ${EL_HTTP}"
 log "  EL WS:         ${EL_WS}"
 log "  CL HTTP:       ${CL_HTTP}"

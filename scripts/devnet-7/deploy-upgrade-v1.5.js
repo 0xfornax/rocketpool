@@ -274,6 +274,44 @@ async function main() {
     };
     saveDeployment(deployment);
 
+    // Ensure notify.threshold is safe for short kurtosis chains. Storage usually
+    // persists from seed, but re-apply after upgrade so SKIP_SEED / re-inits
+    // cannot leave mainnet default 112 (underflows when wd < threshold).
+    // Guardrail min is 19 (RocketDAOProtocolSettingsMegapool.setSettingUint).
+    {
+        const notifyThreshold = BigInt(process.env.NOTIFY_THRESHOLD || '19');
+        const daoProtocol = new ethers.Contract(
+            deployment.addresses.RocketDAOProtocol,
+            [
+                'function bootstrapSettingUint(string settingContractName, string settingPath, uint256 value)',
+                'function getBootstrapModeDisabled() view returns (bool)',
+            ],
+            wallet,
+        );
+        const settings = new ethers.Contract(
+            deployment.addresses.RocketDAOProtocolSettingsMegapool,
+            ['function getNotifyThreshold() view returns (uint256)'],
+            provider,
+        );
+        const current = await settings.getNotifyThreshold();
+        if (current === notifyThreshold) {
+            console.log(`  - notify.threshold already ${current}`);
+        } else if (await daoProtocol.getBootstrapModeDisabled()) {
+            console.log(
+                `  - WARNING: notify.threshold is ${current} (want ${notifyThreshold}) but bootstrap is closed; set manually`,
+            );
+        } else {
+            console.log(`  - Setting notify.threshold ${current} → ${notifyThreshold}...`);
+            tx = await daoProtocol.bootstrapSettingUint(
+                'rocketDAOProtocolSettingsMegapool',
+                'notify.threshold',
+                notifyThreshold,
+            );
+            await tx.wait();
+            console.log(`    ok ${tx.hash} (now ${(await settings.getNotifyThreshold()).toString()})`);
+        }
+    }
+
     console.log('v1.5 upgrade complete');
 }
 

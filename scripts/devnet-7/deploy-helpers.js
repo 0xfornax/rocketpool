@@ -1,6 +1,10 @@
 /**
- * Deploy Smart Node helper contracts (Multicall2, EthBalanceChecker) onto a live
- * Kurtosis chain and merge addresses into deployments/latest.json + odao-smartnode.env.
+ * Deploy Smart Node helper contracts onto a live Kurtosis chain and merge
+ * addresses into deployments/latest.json + odao-smartnode.env:
+ *   - Multicall2
+ *   - EthBalanceChecker
+ *   - RocketSignerRegistry
+ *   - UniswapOracleMock (RPL TWAP pool stub for watchtower submit-rpl-price)
  *
  * Usage:
  *   PROVIDER_URL=http://127.0.0.1:PORT PRIVATE_KEY=0x... \
@@ -28,10 +32,14 @@ function loadArtifact(name) {
         Multicall2: path.join(ROOT, 'artifacts/contracts/thirdparty/Multicall2/Multicall2.sol/Multicall2.json'),
         EthBalanceChecker: path.join(ROOT, 'artifacts/contracts/thirdparty/EthBalanceChecker/EthBalanceChecker.sol/EthBalanceChecker.json'),
         RocketSignerRegistry: path.join(ROOT, 'artifacts/contracts/thirdparty/RocketSignerRegistry/RocketSignerRegistry.sol/RocketSignerRegistry.json'),
+        UniswapOracleMock: path.join(ROOT, 'artifacts/contracts/thirdparty/UniswapOracleMock/UniswapOracleMock.sol/UniswapOracleMock.json'),
     };
     const p = map[name];
     if (!p || !fs.existsSync(p)) {
-        throw new Error(`Artifact not found for ${name}: ${p}`);
+        throw new Error(
+            `Artifact not found for ${name}: ${p}\n`
+            + `  Run: npx hardhat compile  (from the rocketpool repo root)`,
+        );
     }
     return JSON.parse(fs.readFileSync(p, 'utf8'));
 }
@@ -95,6 +103,10 @@ async function main() {
     let multicall = deployment.addresses.Multicall2;
     let balanceChecker = deployment.addresses.EthBalanceChecker;
     let signerRegistry = deployment.addresses.RocketSignerRegistry;
+    // TWAP pool address used by Smart Node watchtower for RPL price submissions.
+    let twapPool = deployment.addresses.UniswapOracleMock
+        || deployment.addresses.RplTwapPool
+        || deployment.addresses.RPLTwapPool;
 
     if (!(await hasCode(multicall))) {
         multicall = await deployOne(wallet, 'Multicall2');
@@ -117,6 +129,16 @@ async function main() {
         console.log(`  RocketSignerRegistry already at ${signerRegistry}`);
     }
 
+    if (!(await hasCode(twapPool))) {
+        twapPool = await deployOne(wallet, 'UniswapOracleMock');
+        deployment.addresses.UniswapOracleMock = twapPool;
+        deployment.addresses.RplTwapPool = twapPool;
+    } else {
+        console.log(`  UniswapOracleMock (RPL TWAP) already at ${twapPool}`);
+        deployment.addresses.UniswapOracleMock = twapPool;
+        deployment.addresses.RplTwapPool = twapPool;
+    }
+
     fs.writeFileSync(DEPLOYMENT_FILE, JSON.stringify(deployment, null, 2));
     // Also mirror into a dated file if latest is a symlink-like copy
     const latestMirror = path.join(ROOT, 'deployments', 'helpers_' + new Date().toISOString() + '.json');
@@ -124,6 +146,8 @@ async function main() {
         Multicall2: multicall,
         EthBalanceChecker: balanceChecker,
         RocketSignerRegistry: signerRegistry,
+        UniswapOracleMock: twapPool,
+        RplTwapPool: twapPool,
         chain: deployment.chain,
         providerUrl,
     }, null, 2));
@@ -135,6 +159,8 @@ async function main() {
         ROCKETPOOL_DEVNET_BALANCE_BATCHER_ADDRESS: balanceChecker,
         SIGNER_REGISTRY_ADDRESS: signerRegistry,
         ROCKETPOOL_DEVNET_SIGNER_REGISTRY_ADDRESS: signerRegistry,
+        RPL_TWAP_POOL_ADDRESS: twapPool,
+        ROCKETPOOL_DEVNET_RPL_TWAP_POOL_ADDRESS: twapPool,
     });
 
     console.log('  Updated', DEPLOYMENT_FILE);
@@ -142,6 +168,7 @@ async function main() {
     console.log('  Multicall2:            ', multicall);
     console.log('  EthBalanceChecker:     ', balanceChecker);
     console.log('  RocketSignerRegistry:  ', signerRegistry);
+    console.log('  UniswapOracleMock/TWAP:', twapPool);
 }
 
 main().catch((e) => {

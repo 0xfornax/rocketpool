@@ -1,29 +1,29 @@
 /**
- * Patch a master-branch scripts/deploy.js to add a Kurtosis chain profile that
- * reads genesis immutables from the environment (same vars as deploy.sh).
+ * Patch a baseline-branch scripts/deploy.js to add (or replace) a Kurtosis chain
+ * profile that reads genesis immutables from the environment.
  *
- * Master BeaconStateVerifier uses uint64[5] fork slots (Altair..Electra).
+ * v1.4.1-dev BeaconStateVerifier uses uint64[7] fork slots
+ * (Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas).
  *
  * Usage:
- *   node scripts/devnet-7/patch-master-deploy-kurtosis.js /path/to/master/worktree/scripts/deploy.js
+ *   node scripts/devnet-7/patch-master-deploy-kurtosis.js /path/to/worktree/scripts/deploy.js
  */
 const fs = require('fs');
 
 const target = process.argv[2];
 if (!target || !fs.existsSync(target)) {
-    console.error('Usage: node patch-master-deploy-kurtosis.js <path-to-master-deploy.js>');
+    console.error('Usage: node patch-master-deploy-kurtosis.js <path-to-baseline-deploy.js>');
     process.exit(1);
 }
 
 let src = fs.readFileSync(target, 'utf8');
-if (src.includes("'kurtosis':")) {
-    console.log('kurtosis profile already present; skipping patch');
-    process.exit(0);
-}
 
+// 7 slots: Altair..Gloas. On this Kurtosis schedule Altair–Fulu are at genesis (0);
+// Gloas is delayed (default epoch 1 → slot 32; wall-clock depends on seconds_per_slot).
+// Override via FORK_SLOTS_MASTER.
 const kurtosisBlock = `
-    // Local Kurtosis network (injected by scripts/devnet-7 for master baseline deploy).
-    // Master BSV uses 5 fork slots (Altair..Electra); Fulu/Gloas are CL-side only here.
+    // Local Kurtosis network (injected by scripts/devnet-7 for baseline deploy).
+    // v1.4.1-dev BSV uses uint64[7] fork slots (Altair..Gloas).
     'kurtosis': {
         deployer: {
             depositAddress: '0x00000000219ab540356cBB839Cbe05303d7705Fa',
@@ -46,7 +46,10 @@ const kurtosisBlock = `
             beaconRootsHistoryBufferLength: 8191n,
             beaconRoots: process.env.BEACON_ROOTS
                 || '0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02',
-            forkSlots: (process.env.FORK_SLOTS_MASTER || '0,0,0,0,0')
+            // Last slot is Gloas activation slot (= GLOAS_FORK_EPOCH * SLOTS_PER_EPOCH).
+            // Must match network_params.yaml / live CL — wrong value → progressive vs list
+            // SSZ path mismatch → "Invalid witness length" on stake proofs.
+            forkSlots: (process.env.FORK_SLOTS_MASTER || '0,0,0,0,0,0,3200')
                 .split(',')
                 .map((s) => BigInt(s.trim())),
             deployThirdParty: false,
@@ -57,7 +60,19 @@ const kurtosisBlock = `
     },
 `;
 
-// Insert before 'hardhat' entry
+// Remove any previous injected kurtosis profile so re-runs stay correct when BSV changes.
+// Matches both single-quoted 'kurtosis' and double-quoted forms with trailing comma block.
+const kurtosisRe = /[ \t]*\/\/ Local Kurtosis network[\s\S]*?'kurtosis'\s*:\s*\{[\s\S]*?\n[ \t]*\},?\n/;
+const kurtosisReLoose = /[ \t]*'kurtosis'\s*:\s*\{[\s\S]*?deployStorageHelper[\s\S]*?\n[ \t]*\},?\n/;
+
+if (kurtosisRe.test(src)) {
+    src = src.replace(kurtosisRe, '');
+    console.log('Removed previous kurtosis profile (comment-anchored)');
+} else if (kurtosisReLoose.test(src)) {
+    src = src.replace(kurtosisReLoose, '');
+    console.log('Removed previous kurtosis profile');
+}
+
 if (!src.includes("'hardhat':")) {
     console.error('Could not find hardhat chain entry to insert kurtosis before');
     process.exit(1);
