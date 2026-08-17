@@ -1,12 +1,16 @@
-import { RocketPoolDeployer } from '../test/_helpers/deployer';
-import { artifacts } from '../test/_utils/artifacts';
-import { injectBNHelpers } from '../test/_helpers/bn';
-import { EtherscanVerifier } from '../test/_helpers/verify';
+import { RocketPoolDeployer } from '../test-old/_helpers/deployer';
+import { artifacts } from '../test-old/_utils/artifacts';
+import { injectBNHelpers } from '../test-old/_helpers/bn';
+import { EtherscanVerifier } from '../test-old/_helpers/verify';
+import {
+    disposeHardhatRuntime,
+    ethers,
+    getHardhatRuntime,
+    initialiseTestRuntime,
+} from '../test-old/_utils/hardhat-runtime';
+import { readBuildInfo } from './_helpers/build-info';
 import fs from 'fs';
 import path from 'path';
-
-const hre = require('hardhat');
-const ethers = hre.ethers;
 
 const chain = process.env.CHAIN || 'mainnet';
 const verify = process.env.VERIFY === 'true' || false;
@@ -29,7 +33,6 @@ const chainOpts = {
                 269568n * 32n,  // Deneb
                 364032n * 32n,  // Electra
                 411392n * 32n,  // Fulu
-                18446744073709551615n, // Gloas (not configured)
             ]
         },
         deployStorageHelper: false,
@@ -51,7 +54,6 @@ const chainOpts = {
                 0n,             // Deneb
                 2048n * 32n,    // Electra
                 50688n * 32n,   // Fulu
-                18446744073709551615n, // Gloas (not configured)
             ]
         },
         deployStorageHelper: true,
@@ -73,7 +75,6 @@ const chainOpts = {
             0n, // Deneb
             0n, // Electra
             0n, // Fulu
-            18446744073709551615n, // Gloas (not configured)
         ],
         },
         deployStorageHelper: true,
@@ -164,7 +165,10 @@ async function deploy() {
     const buildInfoMap = {};
     for (const contract in contracts) {
         const artifact = contracts[contract].artifact;
-        const buildInfo = hre.artifacts.getBuildInfoSync(`${artifact.sourceName}:${artifact.contractName}`);
+        const buildInfo = await readBuildInfo(
+            getHardhatRuntime().artifacts,
+            `${artifact.sourceName}:${artifact.contractName}`,
+        );
         deploymentData.buildInfos[buildInfo.id] = buildInfo;
         buildInfoMap[contract] = buildInfo.id;
     }
@@ -225,4 +229,16 @@ async function deploy() {
     console.log('# Deployment complete');
 }
 
-deploy().then(() => process.exit());
+async function main() {
+    await initialiseTestRuntime();
+    try {
+        await deploy();
+    } finally {
+        await disposeHardhatRuntime();
+    }
+}
+
+main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});
