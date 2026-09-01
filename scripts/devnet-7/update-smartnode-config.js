@@ -1,20 +1,29 @@
 /**
- * Patch smartnode shared/services/config/smartnode-config.go Kurtosis Devnet
- * hardcoded addresses from deployments/latest.json (+ helpers if present).
+ * Patch Smart Node network YAML from deployments/latest.json for Kurtosis.
+ *
+ * Smart Node reads Storage / RPL / rETH / helpers from networks-default.yml
+ * (embed, then on-disk next to user-settings.yml) overlaid by networks-extra.yml.
+ * It does not read ROCKETPOOL_DEVNET_* env vars.
+ *
+ * This script:
+ *   1. Patches the `devnet` addresses block in networks-default.yml copies
+ *   2. Writes a complete `devnet` networks-extra.yml overlay next to native SN trees
  *
  * Usage:
  *   node scripts/devnet-7/update-smartnode-config.js
- *   DEPLOYMENT_FILE=... SMARTNODE_CONFIG=... node scripts/devnet-7/update-smartnode-config.js
+ *   DEPLOYMENT_FILE=... SMARTNODE_NETWORKS=... node scripts/devnet-7/update-smartnode-config.js
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEPLOYMENT_FILE = process.env.DEPLOYMENT_FILE
     || path.join(ROOT, 'deployments', 'latest.json');
-const SMARTNODE_CONFIG = process.env.SMARTNODE_CONFIG
-    || path.join(ROOT, '..', 'smartnode', 'shared', 'services', 'config', 'smartnode-config.go');
-const CHAIN_ID = process.env.CHAIN_ID || '3151908';
+const CHAIN_ID = Number(process.env.CHAIN_ID || '3151908');
+
+const DEFAULT_NETWORKS = process.env.SMARTNODE_NETWORKS
+    || path.join(ROOT, '..', 'smartnode', 'shared/services/rocketpool/assets/install/networks-default.yml');
 
 function must(d, key) {
     const v = d.addresses && d.addresses[key];
@@ -22,91 +31,188 @@ function must(d, key) {
     return v;
 }
 
-function replaceConst(src, name, value) {
-    // kurtosisDevnetXxxDefault ... = "0x..." or uint = N
-    const reStr = new RegExp(
-        `(${name}\\s+string\\s*=\\s*)"[^"]*"`,
-        'm',
-    );
-    const reUint = new RegExp(
-        `(${name}\\s+uint\\s*=\\s*)\\d+`,
-        'm',
-    );
-    if (reStr.test(src)) {
-        return src.replace(reStr, `$1"${value}"`);
+function helper(d, ...keys) {
+    for (const k of keys) {
+        const v = d.addresses && d.addresses[k];
+        if (v) return v;
     }
-    if (reUint.test(src)) {
-        return src.replace(reUint, `$1${value}`);
-    }
-    throw new Error(`constant ${name} not found in ${SMARTNODE_CONFIG}`);
+    return '';
 }
 
-function main() {
+function loadAddresses() {
     if (!fs.existsSync(DEPLOYMENT_FILE)) {
         throw new Error(`missing ${DEPLOYMENT_FILE}`);
     }
-    if (!fs.existsSync(SMARTNODE_CONFIG)) {
-        throw new Error(`missing ${SMARTNODE_CONFIG} (set SMARTNODE_CONFIG=...)`);
-    }
-
     const d = JSON.parse(fs.readFileSync(DEPLOYMENT_FILE, 'utf8'));
-    const storage = must(d, 'RocketStorage');
-    const rpl = must(d, 'RocketTokenRPL');
-    const reth = must(d, 'RocketTokenRETH');
-    const multicall = d.addresses.Multicall2 || d.addresses.Multicall || '';
-    const batcher = d.addresses.EthBalanceChecker || '';
-    const signer = d.addresses.RocketSignerRegistry || '';
-    const twap = d.addresses.UniswapOracleMock
-        || d.addresses.RplTwapPool
-        || d.addresses.RPLTwapPool
-        || '';
+    const addrs = {
+        storage: must(d, 'RocketStorage'),
+        rocketSignerRegistry: helper(d, 'RocketSignerRegistry'),
+        rplToken: must(d, 'RocketTokenRPL'),
+        reth: must(d, 'RocketTokenRETH'),
+        rplTwapPool: helper(d, 'UniswapOracleMock', 'RplTwapPool', 'RPLTwapPool'),
+        multicall: helper(d, 'Multicall2', 'Multicall'),
+        balancebatcher: helper(d, 'EthBalanceChecker'),
+    };
+    const missingHelpers = Object.entries(addrs)
+        .filter(([k, v]) => !v && k !== 'storage' && k !== 'rplToken' && k !== 'reth')
+        .map(([k]) => k);
+    if (missingHelpers.length) {
+        console.warn(`  warning: helper address(es) not in latest.json: ${missingHelpers.join(', ')}`);
+        console.warn('           run scripts/devnet-7/deploy-helpers.js first');
+    }
+    return addrs;
+}
 
-    let src = fs.readFileSync(SMARTNODE_CONFIG, 'utf8');
-    src = replaceConst(src, 'kurtosisDevnetChainIDDefault', CHAIN_ID);
-    src = replaceConst(src, 'kurtosisDevnetStorageAddressDefault', storage);
-    src = replaceConst(src, 'kurtosisDevnetRplAddressDefault', rpl);
-    src = replaceConst(src, 'kurtosisDevnetRethAddressDefault', reth);
-    if (multicall) {
-        src = replaceConst(src, 'kurtosisDevnetMulticallAddressDefault', multicall);
+function formatAddresses(addrs) {
+    const lines = ['    addresses:'];
+    const order = [
+        'storage',
+        'rocketSignerRegistry',
+        'rplToken',
+        'reth',
+        'rplTwapPool',
+        'multicall',
+        'balancebatcher',
+    ];
+    for (const key of order) {
+        if (addrs[key]) lines.push(`      ${key}: "${addrs[key]}"`);
     }
-    if (batcher) {
-        src = replaceConst(src, 'kurtosisDevnetBalanceBatcherAddressDefault', batcher);
-    }
-    if (signer) {
-        src = replaceConst(src, 'kurtosisDevnetSignerRegistryAddressDefault', signer);
-    }
-    if (twap) {
-        // Optional const — added when Smart Node has kurtosisDevnetRplTwapPoolAddressDefault
-        try {
-            src = replaceConst(src, 'kurtosisDevnetRplTwapPoolAddressDefault', twap);
-        } catch (e) {
-            // Fall back: patch the Network_Devnet entry in rplTwapPoolAddress map
-            const reMap = /(config\.Network_Devnet:\s*)"[^"]*"(\s*,\s*\n\s*config\.Network_Testnet:.*\n\s*\},?\s*\n\s*multicallAddress)/m;
-            // Prefer a tighter match on the rplTwapPoolAddress block only
-            const reTwap = /(rplTwapPoolAddress:\s*map\[config\.Network\]string\{[\s\S]*?config\.Network_Devnet:\s*)"[^"]*"/;
-            if (reTwap.test(src)) {
-                src = src.replace(reTwap, `$1"${twap}"`);
-            } else if (reMap.test(src)) {
-                src = src.replace(reMap, `$1"${twap}"$2`);
-            } else {
-                throw new Error(
-                    `could not set TWAP address in ${SMARTNODE_CONFIG}: ${e.message}`,
-                );
-            }
-        }
-    }
+    return lines.join('\n');
+}
 
-    fs.writeFileSync(SMARTNODE_CONFIG, src, 'utf8');
-    console.log('Updated Smart Node Kurtosis Devnet defaults:');
-    console.log(`  file:     ${SMARTNODE_CONFIG}`);
+function findDevnetRange(src) {
+    const re = /^  - name: devnet\s*$/m;
+    const m = re.exec(src);
+    if (!m) return null;
+    const start = m.index;
+    const after = src.slice(start + m[0].length);
+    const next = after.search(/\n  - name: /);
+    const end = next === -1 ? src.length : start + m[0].length + next;
+    return { start, end, block: src.slice(start, end) };
+}
+
+function patchDevnetAddresses(src, addrs) {
+    const range = findDevnetRange(src);
+    if (!range) throw new Error('devnet network not found');
+    const addrRe = /\n    addresses:\n(?:      .*\n?)*/;
+    if (!addrRe.test(range.block)) {
+        throw new Error('devnet addresses block not found');
+    }
+    const patchedBlock = range.block.replace(addrRe, `\n${formatAddresses(addrs)}\n`);
+    return src.slice(0, range.start) + patchedBlock + src.slice(range.end);
+}
+
+function extraYamlFromDefault(defaultSrc, addrs, chainId) {
+    const range = defaultSrc ? findDevnetRange(defaultSrc) : null;
+    let block;
+    if (range) {
+        block = range.block.replace(
+            /\n    addresses:\n(?:      .*\n?)*/,
+            `\n${formatAddresses(addrs)}\n`,
+        );
+        block = block.replace(/^    chainID:\s*\d+/m, `    chainID: ${chainId}`);
+    } else {
+        block = [
+            '  - name: devnet',
+            '    label: Devnet',
+            '    description: Rocket Pool development network. This is a local network that is used for development and testing. It uses free fake ETH and free fake RPL to make fake validators.',
+            `    chainID: ${chainId}`,
+            '    snapshotApiDomain: hub.snapshot.org',
+            '    beaconNetwork: hoodi',
+            '    commitBoostChainName: Hoodi',
+            '    clientTagSet: test',
+            '    customChainConfigDir: devnet',
+            '    supportsMevBoost: false',
+            '    allowNonBlsWithdrawalCredentials: true',
+            '    isProduction: false',
+            '    nethermindPruneThresholdMb: 51200',
+            '    rewards:',
+            '      rulesetStartIntervals:',
+            '        - version: 11',
+            '          startInterval: 0',
+            '        - version: 10',
+            '          startInterval: 0',
+            formatAddresses(addrs),
+        ].join('\n') + '\n';
+    }
+    if (!block.endsWith('\n')) block += '\n';
+    return (
+        '# Generated by scripts/devnet-7/update-smartnode-config.js for Kurtosis.\n'
+        + '# Same-name `devnet` replaces the official networks-default.yml entry.\n'
+        + '# Place this next to user-settings.yml (LoadFromFile uses that directory).\n'
+        + 'version: 1\n'
+        + 'networks:\n'
+        + block
+    );
+}
+
+function writeFile(p, content) {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+}
+
+function extraDests() {
+    const extra = [];
+    extra.push(path.join(ROOT, 'deployments', 'networks-extra.yml'));
+    const envDirs = (process.env.SMARTNODE_EXTRA_DIRS || '')
+        .split(path.delimiter)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    const defaults = [
+        '/srv/rocketpool3',
+        '/srv/rocketpool3/rocketpool',
+        '/srv/rocketpool4',
+        '/srv/rocketpool4/rocketpool',
+        path.join(os.homedir(), '.rocketpool'),
+    ];
+    for (const dir of [...defaults, ...envDirs]) {
+        extra.push(path.join(dir, 'networks-extra.yml'));
+    }
+    return extra;
+}
+
+function defaultYamls() {
+    const out = [];
+    if (process.env.SMARTNODE_NETWORKS) out.push(process.env.SMARTNODE_NETWORKS);
+    else if (fs.existsSync(DEFAULT_NETWORKS)) out.push(DEFAULT_NETWORKS);
+    const homeDefault = path.join(os.homedir(), '.rocketpool', 'networks-default.yml');
+    if (fs.existsSync(homeDefault) && !out.includes(homeDefault)) out.push(homeDefault);
+    return out;
+}
+
+function main() {
+    const addrs = loadAddresses();
+    const defaults = defaultYamls();
+    let templateSrc = '';
+    if (defaults.length) templateSrc = fs.readFileSync(defaults[0], 'utf8');
+
+    console.log('Updated Smart Node Kurtosis Devnet addresses:');
     console.log(`  chainId:  ${CHAIN_ID}`);
-    console.log(`  storage:  ${storage}`);
-    console.log(`  rpl:      ${rpl}`);
-    console.log(`  reth:     ${reth}`);
-    console.log(`  multicall:${multicall || '(unchanged)'}`);
-    console.log(`  batcher:  ${batcher || '(unchanged)'}`);
-    console.log(`  signer:   ${signer || '(unchanged)'}`);
-    console.log(`  twap:     ${twap || '(unchanged)'}`);
+    console.log(`  storage:  ${addrs.storage}`);
+    console.log(`  rpl:      ${addrs.rplToken}`);
+    console.log(`  reth:     ${addrs.reth}`);
+    console.log(`  multicall:${addrs.multicall || '(missing)'}`);
+    console.log(`  batcher:  ${addrs.balancebatcher || '(missing)'}`);
+    console.log(`  signer:   ${addrs.rocketSignerRegistry || '(missing)'}`);
+    console.log(`  twap:     ${addrs.rplTwapPool || '(missing)'}`);
+
+    for (const p of defaults) {
+        const src = fs.readFileSync(p, 'utf8');
+        const patched = patchDevnetAddresses(src, addrs);
+        writeFile(p, patched);
+        console.log(`  patched:  ${p}`);
+        if (!templateSrc) templateSrc = patched;
+    }
+
+    const extra = extraYamlFromDefault(templateSrc, addrs, CHAIN_ID);
+    for (const p of extraDests()) {
+        const dir = path.dirname(p);
+        if (dir !== path.join(ROOT, 'deployments') && !fs.existsSync(dir)) {
+            continue;
+        }
+        writeFile(p, extra);
+        console.log(`  extra:    ${p}`);
+    }
 }
 
 main();

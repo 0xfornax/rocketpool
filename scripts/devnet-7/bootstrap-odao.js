@@ -1,18 +1,24 @@
 /**
- * Bootstrap a single oDAO (Oracle DAO / trusted node) member on a Kurtosis deploy.
+ * Bootstrap an oDAO (Oracle DAO / trusted node) member on a Kurtosis deploy.
  *
  * Prerequisites:
  *   - Rocket Pool contracts deployed (deployments/latest.json)
  *   - Guardian = ethereum-package prefunded account #0 (deployer / CHAIN=kurtosis guardian)
- *   - Member  = default seed Smart Node wallet (RP_DIR account 0:
- *               0xc7EBC35C761bFbaE449973E226CE3295B9B7f996), unless ODAO_PRIVATE_KEY is set
+ *   - Member  = Smart Node wallet at RP_DIR (keystore walletIndex, default 0;
+ *               next_account is validator keys and is ignored),
+ *               unless ODAO_PRIVATE_KEY is set.
+ *             Default RP_DIR=/srv/rocketpool3 → seed 0xc7EBC… (odao-0).
+ *             Second member (rocketpool4):
+ *               RP_DIR=/srv/rocketpool4 ODAO_MEMBER_ID=odao-1 \
+ *               ODAO_OUTPUT=deployments/odao-local-rp4.json \
+ *               node scripts/devnet-7/bootstrap-odao.js
  *
  * Flow:
  *   1. Fund member with ETH (gas) if needed, then DRPL → swap to RPL (bond amount)
  *   2. Register member as a Rocket Pool node
  *   3. Guardian bootstrapMember (invite while bootstrap mode is open)
  *   4. Member actionJoin (lock RPL bond)
- *   5. Write deployments/odao-local.json
+ *   5. Write deployments/odao-local.json (or ODAO_OUTPUT)
  *
  * Usage:
  *   PROVIDER_URL=http://127.0.0.1:PORT \
@@ -22,6 +28,7 @@
  *
  * Optional:
  *   ODAO_PRIVATE_KEY=0x...  override member key (skips Smart Node wallet load)
+ *   ODAO_MEMBER_ID / ODAO_MEMBER_URL / ODAO_OUTPUT
  */
 
 const crypto = require('crypto');
@@ -105,7 +112,14 @@ function loadSmartNodeWallet(rpDir) {
     }
 
     const pathTpl = w.derivationPath || "m/44'/60'/0'/0/%d";
-    const accountPath = pathTpl.includes('%d') ? pathTpl.replace('%d', '0') : "m/44'/60'/0'/0/0";
+    // walletIndex is the node account (omitted when 0). next_account is the
+    // next validator key index — never fall back to it as the node account.
+    const walletIndex = (w.walletIndex !== undefined && w.walletIndex !== null && w.walletIndex !== '')
+        ? String(w.walletIndex)
+        : '0';
+    const accountPath = pathTpl.includes('%d')
+        ? pathTpl.replace('%d', walletIndex)
+        : (pathTpl || "m/44'/60'/0'/0/0");
     const root = ethers.HDNodeWallet.fromSeed(seed);
     const rel = accountPath.startsWith('m/') ? accountPath.slice(2) : accountPath;
     return root.derivePath(rel);
@@ -230,6 +244,7 @@ async function main() {
             'function balanceOf(address) view returns (uint256)',
             'function transfer(address to, uint256 amount) returns (bool)',
             'function approve(address spender, uint256 amount) returns (bool)',
+            'function mint(address to, uint256 amount)',
         ],
         provider,
     );
@@ -283,11 +298,23 @@ async function main() {
     if (memberRpl < bond) {
         const need = bond - memberRpl;
         console.log(`  Funding member with ${ethers.formatEther(need)} DRPL → RPL`);
-        const guardianDrpl = await dummyRpl.balanceOf(guardian.address);
+        let guardianDrpl = await dummyRpl.balanceOf(guardian.address);
         if (guardianDrpl < need) {
-            throw new Error(
-                `Guardian DRPL balance ${ethers.formatEther(guardianDrpl)} < needed ${ethers.formatEther(need)}`,
-            );
+            console.log(`  Guardian DRPL low (${ethers.formatEther(guardianDrpl)}); minting ${ethers.formatEther(need)}...`);
+            try {
+                await tx(
+                    dummyRpl.connect(guardian).mint(
+                        guardian.address,
+                        need,
+                        await gasOverrides(dummyRpl, 'mint', [guardian.address, need], guardian),
+                    ),
+                    'Mint DRPL to guardian',
+                );
+            } catch (e) {
+                throw new Error(
+                    `Guardian DRPL ${ethers.formatEther(guardianDrpl)} < needed ${ethers.formatEther(need)} and mint failed: ${e.shortMessage || e.message}`,
+                );
+            }
         }
         await tx(
             dummyRpl.connect(guardian).transfer(

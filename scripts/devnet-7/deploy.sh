@@ -23,6 +23,9 @@
 #   SKIP_KURTOSIS=1      Skip network launch; only deploy contracts against PROVIDER_URL
 #   SKIP_DEPLOY=1        Launch network only; skip Rocket Pool deploy
 #   SKIP_ODAO=1          Skip oDAO bootstrap / Smart Node config generation
+#   SKIP_ODAO_RP4=1      Skip inviting /srv/rocketpool4 as a second oDAO member
+#   SKIP_ODAO_UPGRADE_PROPOSAL=1  Skip submitting an oDAO proposalUpgrade
+#   RP4_DIR              Second Smart Node tree to invite (default: /srv/rocketpool4)
 #   SKIP_SEED=1          Skip ETH/RPL funding of SEED_ADDRESS and deposit-pool seed
 #   SKIP_REGISTER=1      Skip registering /srv/rocketpool3 Smart Node wallet as RP node
 #   SKIP_UPGRADE=1       Skip v1.5 upgrade (stay on baseline contracts)
@@ -31,6 +34,7 @@
 #   PRIVATE_KEY          Guardian/deployer key (default: ethereum-package prefunded #0)
 #   ODAO_PRIVATE_KEY     oDAO member key (default: seed Smart Node wallet at RP_DIR account 0)
 #   RP_DIR               Smart Node tree for wallet/register/oDAO (default: /srv/rocketpool3)
+#   RP4_DIR              Second Smart Node profile invited to oDAO (default: /srv/rocketpool4)
 #   SEED_ADDRESS         Operator to fund (default: 0xc7EBC35C761bFbaE449973E226CE3295B9B7f996;
 #                        same address as default oDAO member)
 #   SEED_ETH / SEED_RPL  Amounts sent to SEED_ADDRESS (defaults: 100 / 10000)
@@ -39,6 +43,12 @@
 #                          requires Kurtosis SettingsNetwork guardrail patch)
 #   REWARDS_CLAIM_PERIODS  rewards interval in balances-submit periods (default: 4;
 #                          wall-clock = periods × SUBMIT_FREQUENCY_SECS → 20 min)
+#   PROPOSAL_VOTE_PHASE_SECS  pDAO vote phase1/phase2 duration (default: 900 = 15 min)
+#   PROPOSAL_VOTE_DELAY_SECS  pDAO vote start delay after create (default: 300 = 5 min)
+#   ODAO_VOTE_DELAY_SECS / ODAO_VOTE_TIME_SECS  oDAO proposal vote delay / window
+#                          (defaults: 300 / 900; applied by propose-odao-upgrade.js)
+#   UPGRADE_DELAY_SECS    security-council veto window after an oDAO upgrade
+#                          proposal executes (default: 600 = 10 min; mainnet 7 days)
 #   NODE_TIMEZONE        registerNode timezone (default: Australia/Brisbane)
 #   ETHEREUM_PACKAGE     Kurtosis package ref (default: github.com/ethpandaops/ethereum-package)
 #   WAIT_TIMEOUT_SECS    RPC readiness timeout (default: 300)
@@ -51,8 +61,8 @@
 #   - v1.4.1-dev contracts — including megapool — are the pre-Gloas baseline;
 #     they are deployed as soon as the EL is ready. The v1.5 upgrade waits for Gloas.
 #   - Host ports are fixed via network_params.yaml port_publisher + kurtosis-ports.env
-#     (EL RPC 32003, EL WS 32004, CL HTTP 33001). sync_smartnode_config still rewrites
-#     odao-smartnode.env / user-settings.yml when contract addresses change.
+#     (EL RPC 32003, EL WS 32004, CL HTTP 33101). sync_smartnode_config still rewrites
+#     odao-smartnode.env / networks-extra.yml / user-settings.yml when contract addresses change.
 #   - Kurtosis 1.20 can stop an enclave but cannot resume a fully STOPPED one.
 #   - CLEAN=1 is required when switching preset/fork schedule.
 
@@ -70,6 +80,7 @@ CLEAN="${CLEAN:-0}"
 SKIP_KURTOSIS="${SKIP_KURTOSIS:-0}"
 SKIP_DEPLOY="${SKIP_DEPLOY:-0}"
 SKIP_ODAO="${SKIP_ODAO:-0}"
+SKIP_ODAO_UPGRADE_PROPOSAL="${SKIP_ODAO_UPGRADE_PROPOSAL:-0}"
 SKIP_SEED="${SKIP_SEED:-0}"
 SKIP_REGISTER="${SKIP_REGISTER:-0}"
 SKIP_UPGRADE="${SKIP_UPGRADE:-0}"
@@ -518,22 +529,17 @@ prepare_master_worktree() {
     [[ -d "$MASTER_WORKDIR" ]] || die "baseline worktree missing at ${MASTER_WORKDIR}"
 }
 
-# Patch smartnode Kurtosis Devnet hardcoded addresses from latest.json.
+# Patch Smart Node networks-default.yml / networks-extra.yml from latest.json.
+# Helpers are loaded from YAML (not ROCKETPOOL_DEVNET_* env).
 update_smartnode_addresses() {
-    local sn_config="${SMARTNODE_CONFIG:-${ROOT_DIR}/../smartnode/shared/services/config/smartnode-config.go}"
-    if [[ ! -f "$sn_config" ]]; then
-        # Common layout: ~/rp/smartnode next to ~/rp/rocketpool
-        sn_config="$(cd "${ROOT_DIR}/.." && pwd)/smartnode/shared/services/config/smartnode-config.go"
+    local sn_networks="${SMARTNODE_NETWORKS:-${ROOT_DIR}/../smartnode/shared/services/rocketpool/assets/install/networks-default.yml}"
+    if [[ ! -f "$sn_networks" ]]; then
+        sn_networks="$(cd "${ROOT_DIR}/.." && pwd)/smartnode/shared/services/rocketpool/assets/install/networks-default.yml"
     fi
-    if [[ ! -f "$sn_config" ]]; then
-        log "warning: smartnode-config.go not found; skip Smart Node address update"
-        log "  set SMARTNODE_CONFIG=/path/to/smartnode-config.go to enable"
-        return 0
-    fi
-    log "Updating Smart Node Kurtosis Devnet defaults from latest.json"
+    log "Updating Smart Node Kurtosis Devnet YAML from latest.json"
     DEPLOYMENT_FILE="${ROOT_DIR}/deployments/latest.json" \
-    SMARTNODE_CONFIG="$sn_config" \
     CHAIN_ID="${CHAIN_ID:-3151908}" \
+    SMARTNODE_NETWORKS="$sn_networks" \
         node "${SCRIPT_DIR}/update-smartnode-config.js"
 }
 
@@ -670,7 +676,7 @@ deploy_helpers() {
 
 bootstrap_odao() {
     local provider_url="$1"
-    log "Bootstrapping single oDAO member (seed wallet ${SEED_ADDRESS} / RP_DIR=${RP_DIR})"
+    log "Bootstrapping oDAO member (seed wallet ${SEED_ADDRESS} / RP_DIR=${RP_DIR})"
     (
         cd "$ROOT_DIR"
         export PROVIDER_URL="$provider_url"
@@ -686,6 +692,27 @@ bootstrap_odao() {
         # Pure node script (does not need hardhat network accounts for member)
         node "${SCRIPT_DIR}/bootstrap-odao.js"
     )
+    # Second oDAO member from rocketpool4 profile (different wallet).
+    local rp4_dir="${RP4_DIR:-/srv/rocketpool4}"
+    if [[ "${SKIP_ODAO_RP4:-0}" == "1" ]]; then
+        log "SKIP_ODAO_RP4=1; not inviting ${rp4_dir} to oDAO"
+    elif [[ ! -f "${rp4_dir}/data/wallet" ]]; then
+        log "No wallet at ${rp4_dir}/data/wallet; skip second oDAO member"
+    else
+        log "Inviting second oDAO member from ${rp4_dir}"
+        (
+            cd "$ROOT_DIR"
+            export PROVIDER_URL="$provider_url"
+            export PRIVATE_KEY
+            unset ODAO_PRIVATE_KEY
+            export RP_DIR="$rp4_dir"
+            export ODAO_MEMBER_ID="${ODAO_RP4_MEMBER_ID:-odao-1}"
+            export ODAO_MEMBER_URL="${ODAO_RP4_MEMBER_URL:-http://odao-1.local}"
+            export ODAO_OUTPUT="${ROOT_DIR}/deployments/odao-local-rp4.json"
+            export DEPLOY_GAS_LIMIT
+            node "${SCRIPT_DIR}/bootstrap-odao.js"
+        )
+    fi
 }
 
 verify_odao() {
@@ -694,6 +721,19 @@ verify_odao() {
     (
         cd "$ROOT_DIR"
         PROVIDER_URL="$provider_url" node "${SCRIPT_DIR}/verify-odao.js" --rpc "$provider_url"
+    )
+}
+
+propose_odao_upgrade() {
+    local provider_url="$1"
+    log "Submitting oDAO proposalUpgrade (upgradeContract rocketAuctionManager)"
+    (
+        cd "$ROOT_DIR"
+        export PROVIDER_URL="$provider_url"
+        export PRIVATE_KEY
+        export ODAO_VOTE_DELAY_SECS="${ODAO_VOTE_DELAY_SECS:-300}"
+        export ODAO_VOTE_TIME_SECS="${ODAO_VOTE_TIME_SECS:-900}"
+        node "${SCRIPT_DIR}/propose-odao-upgrade.js"
     )
 }
 
@@ -719,11 +759,11 @@ seed_devnet() {
     )
 }
 
-# Register /srv/rocketpool3 Smart Node wallet via RocketNodeManager.registerNode.
+# Register Smart Node wallet, allow RPL locking, and stake STAKE_RPL (default 2000).
 register_smartnode() {
     local provider_url="$1"
     log "Registering Smart Node wallet as Rocket Pool node"
-    log "  RP_DIR=${RP_DIR}  timezone=${NODE_TIMEZONE}"
+    log "  RP_DIR=${RP_DIR}  timezone=${NODE_TIMEZONE}  stake=${STAKE_RPL:-2000} RPL"
     if [[ ! -f "${RP_DIR}/data/wallet" ]]; then
         log "warning: ${RP_DIR}/data/wallet missing; skip node register"
         log "  init wallet first: rocketpool -c ${RP_DIR} wallet init"
@@ -734,6 +774,7 @@ register_smartnode() {
         export PROVIDER_URL="$provider_url"
         export RP_DIR
         export TIMEZONE="$NODE_TIMEZONE"
+        export STAKE_RPL="${STAKE_RPL:-2000}"
         node "${SCRIPT_DIR}/register-node.js"
     )
 }
@@ -860,6 +901,11 @@ main() {
         verify_odao "$provider_url"
         # oDAO meta written — refresh env (ports + member key) together with addresses.
         sync_smartnode_config
+        if [[ "${SKIP_ODAO_UPGRADE_PROPOSAL}" == "1" ]]; then
+            log "SKIP_ODAO_UPGRADE_PROPOSAL=1; not submitting an oDAO upgrade-contract proposal"
+        else
+            propose_odao_upgrade "$provider_url"
+        fi
     else
         log "SKIP_ODAO=1; leaving oDAO bootstrap for later"
     fi

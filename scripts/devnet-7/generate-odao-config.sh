@@ -13,6 +13,7 @@
 # Writes:
 #   deployments/odao-smartnode.env
 #   deployments/odao-user-settings.draft.yml
+#   deployments/networks-extra.yml (+ copy next to native Smart Node trees)
 
 set -euo pipefail
 
@@ -174,6 +175,15 @@ externalLighthouse:
   httpUrl: ${CL_HTTP}
   doppelgangerDetection: false
 EOF
+
+# Smart Node reads Storage / helpers from networks-extra.yml next to user-settings.yml,
+# not from ROCKETPOOL_DEVNET_* env. Keep YAML overlays in sync with latest.json.
+if DEPLOYMENT_FILE="$DEPLOYMENT_FILE" CHAIN_ID="$CHAIN_ID" \
+    node "${SCRIPT_DIR}/update-smartnode-config.js"; then
+    log "Updated networks-extra.yml from ${DEPLOYMENT_FILE}"
+else
+    log "warning: could not write networks-extra.yml (Smart Node helper addresses may be stale)"
+fi
 
 # Keep /srv/rocketpool3 in sync when present (native Smart Node instance).
 if [[ -d "${RP3_DIR}" ]]; then

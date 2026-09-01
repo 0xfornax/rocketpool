@@ -12,9 +12,9 @@ contract RocketDAOProtocolSettingsProposals is RocketDAOProtocolSettings, Rocket
         // Initialize settings on deployment
         if(!getBool(keccak256(abi.encodePacked(settingNameSpace, "deployed")))) {
             // Init settings
-            setSettingUint("proposal.vote.phase1.time", 1 weeks);           // How long a proposal can be voted on in phase 1
-            setSettingUint("proposal.vote.phase2.time", 1 weeks);           // How long a proposal can be voted on in phase 2
-            setSettingUint("proposal.vote.delay.time", 1 weeks);            // How long before a proposal can be voted on after it is created
+            setSettingUint("proposal.vote.phase1.time", 15 minutes);        // How long a proposal can be voted on in phase 1
+            setSettingUint("proposal.vote.phase2.time", 15 minutes);        // How long a proposal can be voted on in phase 2
+            setSettingUint("proposal.vote.delay.time", 5 minutes);           // How long before a proposal can be voted on after it is created
             setSettingUint("proposal.execute.time", 4 weeks);               // How long a proposal can be executed after its voting period is finished
             setSettingUint("proposal.bond", 100 ether);                     // The amount of RPL a proposer has to put up as a bond for creating a new proposal
             setSettingUint("proposal.challenge.bond", 10 ether);            // The amount of RPL a challenger has to put up as a bond for challenging a proposal
@@ -32,14 +32,13 @@ contract RocketDAOProtocolSettingsProposals is RocketDAOProtocolSettings, Rocket
         // Some safety guards for certain settings
         bytes32 settingKey = keccak256(bytes(_settingPath));
         if(settingKey == keccak256(bytes("proposal.vote.phase1.time"))) {
-            // Must be at least 1 day (RPIP-33)
-            require(_value >= 1 days, "Value must be at least 1 day");
+            // Kurtosis/dev: allow 15-minute vote phases (mainnet RPIP-33 is 1 day)
+            require(_value >= 15 minutes, "Value must be at least 15 minutes");
         } else if(settingKey == keccak256(bytes("proposal.vote.phase2.time"))) {
-            // Must be at least 1 day (RPIP-33)
-            require(_value >= 1 days, "Value must be at least 1 day");
+            require(_value >= 15 minutes, "Value must be at least 15 minutes");
         } else if(settingKey == keccak256(bytes("proposal.vote.delay.time"))) {
-            // Must be at least 1 week (RPIP-33)
-            require(_value >= 1 weeks, "Value must be at least 1 week");
+            // Kurtosis/dev: allow 5-minute vote start delay (mainnet RPIP-33 is 1 week)
+            require(_value >= 5 minutes, "Value must be at least 5 minutes");
         } else if(settingKey == keccak256(bytes("proposal.execute.time"))) {
             // Must be at least 1 week (RPIP-33)
             require(_value >= 1 weeks, "Value must be at least 1 week");

@@ -1,8 +1,11 @@
 /**
  * Register the /srv/rocketpool3 Smart Node wallet as a Rocket Pool node.
  *
- * Decrypts the Rocket Pool v4 keystore (encrypted BIP39 seed → m/44'/60'/0'/0/0),
+ * Decrypts the Rocket Pool v4 keystore (encrypted BIP39 seed → m/44'/60'/0'/0/%d),
  * then calls RocketNodeManager.registerNode if not already registered.
+ * After that (or if already registered):
+ *   - RocketNodeStaking.setRPLLockingAllowed(node, true)  (allow-rpl-locking)
+ *   - approve + stakeRPL(STAKE_RPL)                       (default 2000)
  *
  * Intended to run after seed-devnet.js (ETH/RPL funded to the wallet address).
  *
@@ -13,6 +16,9 @@
  * Env:
  *   RP_DIR           Smart Node data root (default: /srv/rocketpool3)
  *   TIMEZONE         registerNode timezone (default: Australia/Brisbane)
+ *   STAKE_RPL        RPL to stake after register (default: 2000; 0 skips)
+ *   SKIP_RPL_LOCKING=1  skip setRPLLockingAllowed
+ *   OPERATOR_PRIVATE_KEY  override signer for lock+stake (default: RP_DIR node account)
  *   DEPLOYMENT_FILE  deployments/latest.json
  */
 
@@ -27,11 +33,44 @@ const DEPLOYMENT_FILE = process.env.DEPLOYMENT_FILE
 const RP_DIR = process.env.RP_DIR || '/srv/rocketpool3';
 const TIMEZONE = process.env.TIMEZONE || process.env.ODAO_TIMEZONE || 'Australia/Brisbane';
 const TX_GAS_CAP = BigInt(process.env.TX_GAS_CAP || '16000000');
+const STAKE_RPL = ethers.parseEther(process.env.STAKE_RPL || '2000');
+const SKIP_RPL_LOCKING = process.env.SKIP_RPL_LOCKING === '1';
+// Default seed / Smart Node account 0. Compared against the derived operator.
+const DEFAULT_OPERATOR = '0xc7EBC35C761bFbaE449973E226CE3295B9B7f996';
+const DEFAULT_GUARDIAN_KEY = '0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31';
+
+function normalizeKey(k) {
+    if (!k) return k;
+    return k.startsWith('0x') ? k : `0x${k}`;
+}
+
+/**
+ * Node operator account index from a Smart Node v4 keystore.
+ * walletIndex is the node account (omitted when 0 because of Go omitempty).
+ * next_account is the next validator key index — never the node account.
+ */
+function nodeAccountIndex(keystore) {
+    if (keystore.walletIndex !== undefined && keystore.walletIndex !== null && keystore.walletIndex !== '') {
+        return String(keystore.walletIndex);
+    }
+    return '0';
+}
 
 const NODE_MANAGER_ABI = [
     'function registerNode(string timezoneLocation)',
     'function getNodeExists(address nodeAddress) view returns (bool)',
     'function getNodeTimezoneLocation(address nodeAddress) view returns (string)',
+];
+const NODE_STAKING_ABI = [
+    'function getRPLLockingAllowed(address nodeAddress) view returns (bool)',
+    'function setRPLLockingAllowed(address nodeAddress, bool allowed)',
+    'function stakeRPL(uint256 amount)',
+    'function getNodeStakedRPL(address nodeAddress) view returns (uint256)',
+];
+const ERC20_ABI = [
+    'function balanceOf(address) view returns (uint256)',
+    'function approve(address spender, uint256 amount) returns (bool)',
+    'function allowance(address owner, address spender) view returns (uint256)',
 ];
 
 function loadDeployment() {
@@ -43,7 +82,7 @@ function loadDeployment() {
 
 /**
  * Decrypt Rocket Pool CLI wallet v4 keystore (encrypted 64-byte BIP39 seed).
- * Returns ethers HDNodeWallet for account 0 (m/44'/60'/0'/0/0).
+ * Returns the node operator HD account (walletIndex, default 0).
  */
 function loadSmartNodeWallet(rpDir) {
     const walletPath = path.join(rpDir, 'data', 'wallet');
@@ -92,7 +131,10 @@ function loadSmartNodeWallet(rpDir) {
 
     // ethers v6: HDNodeWallet from seed
     const pathTpl = w.derivationPath || "m/44'/60'/0'/0/%d";
-    const accountPath = pathTpl.includes('%d') ? pathTpl.replace('%d', '0') : "m/44'/60'/0'/0/0";
+    const walletIndex = nodeAccountIndex(w);
+    const accountPath = pathTpl.includes('%d')
+        ? pathTpl.replace('%d', walletIndex)
+        : (pathTpl || "m/44'/60'/0'/0/0");
     const root = ethers.HDNodeWallet.fromSeed(seed);
     // derivePath expects path without leading "m/"
     const rel = accountPath.startsWith('m/') ? accountPath.slice(2) : accountPath;
@@ -110,6 +152,48 @@ async function gasOverrides(contract, method, args, signer) {
     }
     const buffered = (estimated * 12n) / 10n;
     return { gasLimit: buffered > TX_GAS_CAP ? TX_GAS_CAP : buffered };
+}
+
+async function fundOperatorRpl(provider, deployment, operator, amount) {
+    const guardianKey = normalizeKey(process.env.PRIVATE_KEY || DEFAULT_GUARDIAN_KEY);
+    const guardian = new ethers.Wallet(guardianKey, provider);
+    const dummyAddr = deployment.addresses.RocketTokenDummyRPL;
+    const rplAddr = deployment.addresses.RocketTokenRPL;
+    if (!dummyAddr || !rplAddr) {
+        throw new Error('RocketTokenDummyRPL or RocketTokenRPL missing from latest.json');
+    }
+    const dummyRpl = new ethers.Contract(dummyAddr, [
+        'function balanceOf(address) view returns (uint256)',
+        'function mint(address to, uint256 amount)',
+        'function approve(address spender, uint256 amount) returns (bool)',
+    ], guardian);
+    const rpl = new ethers.Contract(rplAddr, [
+        'function transfer(address to, uint256 amount) returns (bool)',
+        'function swapTokens(uint256 amount)',
+    ], guardian);
+
+    let dummyBal = await dummyRpl.balanceOf(guardian.address);
+    if (dummyBal < amount) {
+        console.log(`  - Guardian DRPL low (${ethers.formatEther(dummyBal)}); minting ${ethers.formatEther(amount)}...`);
+        const opts = await gasOverrides(dummyRpl, 'mint', [guardian.address, amount], guardian);
+        const tx = await dummyRpl.mint(guardian.address, amount, opts);
+        const rc = await tx.wait();
+        if (rc.status !== 1) throw new Error(`DRPL mint failed tx=${tx.hash}`);
+        console.log(`    ok ${tx.hash}`);
+    }
+
+    console.log(`  - Swap ${ethers.formatEther(amount)} DRPL → RPL and send to ${operator.address}...`);
+    let opts = await gasOverrides(dummyRpl, 'approve', [rplAddr, amount], guardian);
+    let tx = await dummyRpl.approve(rplAddr, amount, opts);
+    await tx.wait();
+    opts = await gasOverrides(rpl, 'swapTokens', [amount], guardian);
+    tx = await rpl.swapTokens(amount, opts);
+    await tx.wait();
+    opts = await gasOverrides(rpl, 'transfer', [operator.address, amount], guardian);
+    tx = await rpl.transfer(operator.address, amount, opts);
+    const rc = await tx.wait();
+    if (rc.status !== 1) throw new Error(`RPL transfer failed tx=${tx.hash}`);
+    console.log(`    ok ${tx.hash}`);
 }
 
 async function main() {
@@ -135,39 +219,132 @@ async function main() {
     console.log('Register Smart Node as RP node');
     console.log(`  RPC:         ${providerUrl}`);
     console.log(`  RP_DIR:      ${RP_DIR}`);
-    console.log(`  Wallet:      ${wallet.address}`);
+    console.log(`  Wallet:      ${wallet.address} (node account, not validator next_account)`);
     console.log(`  NodeManager: ${nodeManagerAddr}`);
     console.log(`  Timezone:    ${TIMEZONE}`);
 
     const nodeManager = new ethers.Contract(nodeManagerAddr, NODE_MANAGER_ABI, provider);
     if (await nodeManager.getNodeExists(wallet.address)) {
         const tz = await nodeManager.getNodeTimezoneLocation(wallet.address);
-        console.log(`  Already registered (timezone=${tz}); nothing to do`);
-        return;
+        console.log(`  Already registered (timezone=${tz})`);
+    } else {
+        const bal = await provider.getBalance(wallet.address);
+        console.log(`  ETH balance: ${ethers.formatEther(bal)}`);
+        if (bal === 0n) {
+            console.log(
+                `  - RP_DIR wallet ${wallet.address} has 0 ETH; skip register `
+                + `(will still allow-rpl-locking + stake if operator has ETH)`,
+            );
+        } else {
+
+        const opts = await gasOverrides(nodeManager, 'registerNode', [TIMEZONE], wallet);
+        console.log(`  - registerNode(${TIMEZONE}) gasLimit=${opts.gasLimit}...`);
+        const tx = await nodeManager.connect(wallet).registerNode(TIMEZONE, opts);
+        const receipt = await tx.wait();
+        if (receipt.status !== 1) {
+            throw new Error(`registerNode failed status=${receipt.status} tx=${tx.hash}`);
+        }
+        console.log(`    ok ${tx.hash}`);
+
+        const exists = await nodeManager.getNodeExists(wallet.address);
+        if (!exists) {
+            throw new Error('registerNode mined but getNodeExists is still false');
+        }
+        console.log('  Node registered successfully');
+        }
     }
 
-    const bal = await provider.getBalance(wallet.address);
-    console.log(`  ETH balance: ${ethers.formatEther(bal)}`);
-    if (bal === 0n) {
-        throw new Error(
-            `Wallet ${wallet.address} has 0 ETH — run seed-devnet.js first (SEED_ADDRESS should match wallet)`,
+    const stakingAddr = deployment.addresses.RocketNodeStaking;
+    const rplAddr = deployment.addresses.RocketTokenRPL;
+    if (!stakingAddr || !rplAddr) {
+        throw new Error('RocketNodeStaking or RocketTokenRPL missing from latest.json');
+    }
+
+    // Lock + stake on the Smart Node account (HD wallet). OPERATOR_PRIVATE_KEY
+    // is the only override — do not pick up odao-smartnode.env, whose member
+    // may be a different derivation index than the node operator.
+    const operatorKey = normalizeKey(process.env.OPERATOR_PRIVATE_KEY || hdWallet.privateKey);
+    const operator = new ethers.Wallet(operatorKey, provider);
+    const expectedOp = (process.env.SEED_ADDRESS || DEFAULT_OPERATOR).toLowerCase();
+    if (operator.address.toLowerCase() !== expectedOp) {
+        console.log(
+            `  NOTE: operator ${operator.address} differs from seed ${expectedOp}`,
         );
     }
+    console.log(`  Operator:    ${operator.address} (allow-rpl-locking + stake)`);
 
-    const opts = await gasOverrides(nodeManager, 'registerNode', [TIMEZONE], wallet);
-    console.log(`  - registerNode(${TIMEZONE}) gasLimit=${opts.gasLimit}...`);
-    const tx = await nodeManager.connect(wallet).registerNode(TIMEZONE, opts);
-    const receipt = await tx.wait();
-    if (receipt.status !== 1) {
-        throw new Error(`registerNode failed status=${receipt.status} tx=${tx.hash}`);
+    const opManager = nodeManager.connect(provider);
+    if (!(await opManager.getNodeExists(operator.address))) {
+        const opEth = await provider.getBalance(operator.address);
+        if (opEth === 0n) {
+            throw new Error(
+                `Operator ${operator.address} is not registered and has 0 ETH`,
+            );
+        }
+        const opts = await gasOverrides(nodeManager, 'registerNode', [TIMEZONE], operator);
+        console.log(`  - registerNode(${TIMEZONE}) for operator gasLimit=${opts.gasLimit}...`);
+        const tx = await nodeManager.connect(operator).registerNode(TIMEZONE, opts);
+        await tx.wait();
+        console.log(`    ok ${tx.hash}`);
     }
-    console.log(`    ok ${tx.hash}`);
 
-    const exists = await nodeManager.getNodeExists(wallet.address);
-    if (!exists) {
-        throw new Error('registerNode mined but getNodeExists is still false');
+    const staking = new ethers.Contract(stakingAddr, NODE_STAKING_ABI, operator);
+    const rpl = new ethers.Contract(rplAddr, ERC20_ABI, operator);
+
+    if (!SKIP_RPL_LOCKING) {
+        const allowed = await staking.getRPLLockingAllowed(operator.address);
+        if (allowed) {
+            console.log('  - RPL locking already allowed');
+        } else {
+            const opts = await gasOverrides(staking, 'setRPLLockingAllowed', [operator.address, true], operator);
+            console.log(`  - setRPLLockingAllowed(true) gasLimit=${opts.gasLimit}...`);
+            const tx = await staking.setRPLLockingAllowed(operator.address, true, opts);
+            const receipt = await tx.wait();
+            if (receipt.status !== 1) {
+                throw new Error(`setRPLLockingAllowed failed status=${receipt.status} tx=${tx.hash}`);
+            }
+            console.log(`    ok ${tx.hash}`);
+        }
     }
-    console.log('  Node registered successfully');
+
+    if (STAKE_RPL > 0n) {
+        const already = await staking.getNodeStakedRPL(operator.address);
+        if (already >= STAKE_RPL) {
+            console.log(`  - already staked ${ethers.formatEther(already)} RPL (>= ${ethers.formatEther(STAKE_RPL)}); skip`);
+        } else {
+            const need = STAKE_RPL - already;
+            let rplBal = await rpl.balanceOf(operator.address);
+            if (rplBal < need) {
+                console.log(
+                    `  - Need ${ethers.formatEther(need)} more RPL; ${operator.address} has ${ethers.formatEther(rplBal)}; funding from guardian...`,
+                );
+                await fundOperatorRpl(provider, deployment, operator, need - rplBal);
+                rplBal = await rpl.balanceOf(operator.address);
+                if (rplBal < need) {
+                    throw new Error(
+                        `Need ${ethers.formatEther(need)} more RPL to stake but ${operator.address} still has ${ethers.formatEther(rplBal)} after funding`,
+                    );
+                }
+            }
+            const allowance = await rpl.allowance(operator.address, stakingAddr);
+            if (allowance < need) {
+                const opts = await gasOverrides(rpl, 'approve', [stakingAddr, need], operator);
+                console.log(`  - approve NodeStaking ${ethers.formatEther(need)} RPL...`);
+                const tx = await rpl.approve(stakingAddr, need, opts);
+                await tx.wait();
+                console.log(`    ok ${tx.hash}`);
+            }
+            const opts = await gasOverrides(staking, 'stakeRPL', [need], operator);
+            console.log(`  - stakeRPL(${ethers.formatEther(need)}) gasLimit=${opts.gasLimit}...`);
+            const tx = await staking.stakeRPL(need, opts);
+            const receipt = await tx.wait();
+            if (receipt.status !== 1) {
+                throw new Error(`stakeRPL failed status=${receipt.status} tx=${tx.hash}`);
+            }
+            const after = await staking.getNodeStakedRPL(operator.address);
+            console.log(`    ok ${tx.hash} (staked now ${ethers.formatEther(after)} RPL)`);
+        }
+    }
 }
 
 main().catch((e) => {

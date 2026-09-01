@@ -19,7 +19,7 @@ contract RocketDAOProtocolSettingsSecurity is RocketDAOProtocolSettings, RocketD
             _setSettingUint("proposal.execute.time", 4 weeks);   // How long a proposal can be executed after its voting period is finished
             _setSettingUint("proposal.action.time", 4 weeks);    // Certain proposals require a secondary action to be run after the proposal is successful (joining, leaving etc). This is how long until that action expires
             _setSettingUint("upgradeveto.quorum", 0.33 ether);   // RPIP-60: Member quorum threshold to veto a protocol upgrade (33%)
-            _setSettingUint("upgrade.delay", 7 days);            // RPIP-60: Amount of time after an upgrade proposal passes that the security has to veto it
+            _setSettingUint("upgrade.delay", 10 minutes);        // Kurtosis/dev: 10 min veto window (mainnet RPIP-60 is 7 days)
             // Default permissions for security council
             setBool(keccak256(abi.encodePacked("dao.security.allowed.setting", "deposit", "deposit.enabled")), true);
             setBool(keccak256(abi.encodePacked("dao.security.allowed.setting", "deposit", "deposit.assign.enabled")), true);
@@ -59,7 +59,8 @@ contract RocketDAOProtocolSettingsSecurity is RocketDAOProtocolSettings, RocketD
             } else if(settingKey == keccak256(bytes("upgradeveto.quorum"))) {
                 require(_value >= 0.33 ether && _value <= 1 ether, "Quorum setting must be >= 33% & <= 100%");
             } else if(settingKey == keccak256(bytes("upgrade.delay"))) {
-                require(_value >= 1 days && _value <= 30 days, "Value must be >= 1 day & <= 30 days");
+                // Kurtosis/dev: allow 10-minute upgrade delay (mainnet RPIP-60 is >= 1 day)
+                require(_value >= 10 minutes && _value <= 30 days, "Value must be >= 10 minutes & <= 30 days");
             }
         }
         // Update setting now

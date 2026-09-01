@@ -140,6 +140,14 @@ async function main() {
     // Path is the packed storage key suffix used by SettingsRewards / pDAO:
     //   encodePacked("rewards.claims", "periods") → "rewards.claimsperiods"
     const rewardsClaimPeriods = BigInt(process.env.REWARDS_CLAIM_PERIODS || '4');
+    // pDAO vote windows. Mainnet is 1 week each (guardrail >= 1 day). Kurtosis
+    // SettingsProposals patch lowers that to 15 minutes.
+    const proposalVotePhaseTime = BigInt(process.env.PROPOSAL_VOTE_PHASE_SECS || '900');
+    const proposalVoteDelayTime = BigInt(process.env.PROPOSAL_VOTE_DELAY_SECS || '300');
+    // Security-council veto window after an oDAO upgrade proposal is executed.
+    // Mainnet is 7 days (guardrail >= 1 day). Kurtosis SettingsSecurity patch
+    // lowers that to 10 minutes so execute-upgrade is usable on a short chain.
+    const upgradeDelayTime = BigInt(process.env.UPGRADE_DELAY_SECS || '600');
 
     console.log('Seed Kurtosis devnet');
     console.log(`  RPC:            ${providerUrl}`);
@@ -153,6 +161,9 @@ async function main() {
     console.log(`  notify.threshold: ${notifyThreshold}`);
     console.log(`  submit frequency: ${submitFrequency}s (balances + prices)`);
     console.log(`  rewards periods:  ${rewardsClaimPeriods} (interval ${rewardsClaimPeriods * submitFrequency}s)`);
+    console.log(`  proposal phases:  ${proposalVotePhaseTime}s (phase1 + phase2)`);
+    console.log(`  proposal delay:   ${proposalVoteDelayTime}s`);
+    console.log(`  upgrade delay:    ${upgradeDelayTime}s`);
 
     // --- 0a) Enable on-chain pDAO proposals (bootstrapEnableGovernance) ---
     // Without this, createProposal reverts with "DAO has not been enabled".
@@ -300,6 +311,112 @@ async function main() {
             }
             const intervalTime = await settings.getRewardsClaimIntervalTime();
             console.log(`    ok ${tx.hash} (claim interval ${intervalTime}s)`);
+        }
+    }
+
+    // --- 0d2) pDAO vote phase 1 / phase 2 windows ---
+    {
+        const settingsAddr = addr(deployment, 'RocketDAOProtocolSettingsProposals');
+        const settings = new ethers.Contract(settingsAddr, [
+            'function getVotePhase1Time() view returns (uint256)',
+            'function getVotePhase2Time() view returns (uint256)',
+            'function getVoteDelayTime() view returns (uint256)',
+        ], provider);
+        const paths = [
+            { path: 'proposal.vote.phase1.time', getter: () => settings.getVotePhase1Time(), want: proposalVotePhaseTime, label: 'phase1', hint: 'vote phase time >= 1 day' },
+            { path: 'proposal.vote.phase2.time', getter: () => settings.getVotePhase2Time(), want: proposalVotePhaseTime, label: 'phase2', hint: 'vote phase time >= 1 day' },
+            { path: 'proposal.vote.delay.time', getter: () => settings.getVoteDelayTime(), want: proposalVoteDelayTime, label: 'delay', hint: 'vote delay >= 1 week' },
+        ];
+        for (const { path: settingPath, getter, want, label, hint } of paths) {
+            const current = await getter();
+            if (current === want) {
+                console.log(`  - ${settingPath} already ${current}s`);
+                continue;
+            }
+            const bootstrapDisabled = await daoProtocol.getBootstrapModeDisabled();
+            if (bootstrapDisabled) {
+                throw new Error(
+                    `${settingPath} is ${current}s (want ${want}s) but bootstrap mode is closed`,
+                );
+            }
+            console.log(`  - Setting ${settingPath} ${current}s → ${want}s...`);
+            try {
+                const tx = await daoProtocol.bootstrapSettingUint(
+                    'rocketDAOProtocolSettingsProposals',
+                    settingPath,
+                    want,
+                );
+                await tx.wait();
+            } catch (e) {
+                const msg = e.shortMessage || e.message || String(e);
+                throw new Error(
+                    `Failed to set ${settingPath} to ${want}s: ${msg}\n`
+                    + `  Stock SettingsProposals requires ${hint}.\n`
+                    + `  Kurtosis baseline deploy patches that guardrail via prepare-master-worktree.sh.`,
+                );
+            }
+            const after = await getter();
+            if (after !== want) {
+                throw new Error(`${settingPath} still ${after}s after bootstrap`);
+            }
+            console.log(`    ok (${label})`);
+        }
+    }
+
+    // --- 0d3) oDAO upgrade execute delay (security-council veto window) ---
+    {
+        const settingsAddr = addr(deployment, 'RocketDAOProtocolSettingsSecurity');
+        const settings = new ethers.Contract(settingsAddr, [
+            'function getUpgradeDelay() view returns (uint256)',
+        ], provider);
+        const current = await settings.getUpgradeDelay();
+        if (current === upgradeDelayTime) {
+            console.log(`  - upgrade.delay already ${current}s`);
+        } else {
+            const bootstrapDisabled = await daoProtocol.getBootstrapModeDisabled();
+            if (bootstrapDisabled) {
+                throw new Error(
+                    `upgrade.delay is ${current}s (want ${upgradeDelayTime}s) but bootstrap mode is closed`,
+                );
+            }
+            console.log(`  - Setting upgrade.delay ${current}s → ${upgradeDelayTime}s...`);
+            try {
+                const tx = await daoProtocol.bootstrapSettingUint(
+                    'rocketDAOProtocolSettingsSecurity',
+                    'upgrade.delay',
+                    upgradeDelayTime,
+                );
+                await tx.wait();
+            } catch (e) {
+                const msg = e.shortMessage || e.message || String(e);
+                console.log(`    bootstrapSettingUint failed (${msg}); falling back to storage write`);
+                const helper = path.join(__dirname, 'set-upgrade-delay.js');
+                const result = require('child_process').spawnSync(
+                    process.execPath,
+                    [helper],
+                    {
+                        cwd: ROOT,
+                        env: {
+                            ...process.env,
+                            PROVIDER_URL: providerUrl,
+                            UPGRADE_DELAY_SECS: upgradeDelayTime.toString(),
+                        },
+                        stdio: 'inherit',
+                    },
+                );
+                if (result.status !== 0) {
+                    throw new Error(
+                        `Failed to set upgrade.delay to ${upgradeDelayTime}s: ${msg}\n`
+                        + `  Stock SettingsSecurity requires upgrade.delay >= 1 day.\n`
+                        + `  Kurtosis baseline deploy patches that guardrail via prepare-master-worktree.sh.`,
+                    );
+                }
+            }
+            const after = await settings.getUpgradeDelay();
+            if (after !== upgradeDelayTime) {
+                throw new Error(`upgrade.delay still ${after}s after set`);
+            }
+            console.log(`    ok (upgrade delay ${after}s)`);
         }
     }
 

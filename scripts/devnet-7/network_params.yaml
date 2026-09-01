@@ -113,12 +113,16 @@ additional_services: []
 #
 #   EL (start 32000): discovery=32000, engine=32001, metrics=32002,
 #                     rpc=32003, ws=32004
-#   CL (start 33000): discovery=33000, http=33001, metrics=33002, quic=33003
+#   CL (start 33100): discovery=33100, http=33101, metrics=33102, quic=33103
 #
 # So stable endpoints are:
 #   EL_HTTP = http://127.0.0.1:32003
 #   EL_WS   = ws://127.0.0.1:32004
-#   CL_HTTP = http://127.0.0.1:33001
+#   CL_HTTP = http://127.0.0.1:33101
+#
+# 33000 is avoided: Firefox (and other desktop apps) often bind it, and Kurtosis
+# then fails add_service(cl-1-lighthouse-geth) with "33000/tcp: address already
+# in use", leaving an orphan service volume that breaks `enclave inspect`.
 #
 # Requires free ports; fails if something else is bound. Override starts via
 # env before launch if needed (edit here).
@@ -128,4 +132,4 @@ port_publisher:
     public_port_start: 32000
   cl:
     enabled: true
-    public_port_start: 33000
+    public_port_start: 33100

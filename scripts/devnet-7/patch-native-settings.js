@@ -95,22 +95,19 @@ function setRootField(text, field, value) {
     return setSectionField(text, 'root', field, value);
 }
 
-/**
- * Resolve a prices/balances submission reference timestamp at/after beacon
- * genesis. Mainnet default (1713420000) is before Kurtosis genesis and makes
- * watchtower compute a negative time-since-genesis → bogus huge slot.
- */
-function resolveSubmissionReferenceTimestamp(clHttp, env) {
-    if (process.env.PRICE_BALANCE_SUBMISSION_REFERENCE_TIMESTAMP) {
-        return String(process.env.PRICE_BALANCE_SUBMISSION_REFERENCE_TIMESTAMP);
-    }
-    if (env.GENESIS_BLOCK_TIMESTAMP && env.GENESIS_BLOCK_TIMESTAMP !== '0') {
-        return String(env.GENESIS_BLOCK_TIMESTAMP);
-    }
-    if (process.env.GENESIS_BLOCK_TIMESTAMP && process.env.GENESIS_BLOCK_TIMESTAMP !== '0') {
-        return String(process.env.GENESIS_BLOCK_TIMESTAMP);
-    }
-    // Fetch from beacon API
+function rpc(elHttp, method, params) {
+    const { execFileSync } = require('child_process');
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
+    const out = execFileSync('curl', ['-sf', elHttp, '-H', 'Content-Type: application/json', '-d', body], {
+        encoding: 'utf8',
+        timeout: 15000,
+    });
+    const parsed = JSON.parse(out);
+    if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
+    return parsed.result;
+}
+
+function fetchGenesisTime(clHttp) {
     try {
         const { execFileSync } = require('child_process');
         const out = execFileSync('curl', ['-sf', `${clHttp}/eth/v1/beacon/genesis`], {
@@ -125,6 +122,68 @@ function resolveSubmissionReferenceTimestamp(clHttp, env) {
     return null;
 }
 
+/**
+ * First block where `addr` has code, as a unix timestamp. Watchtower eth_calls
+ * Multicall2 at the *target* historical block, so the P/B reference must not
+ * land before helpers exist (empty bytecode → ABI unmarshal empty string).
+ */
+function firstCodeTimestamp(elHttp, addr) {
+    if (!elHttp || !addr) return null;
+    try {
+        const latest = parseInt(rpc(elHttp, 'eth_blockNumber', []), 16);
+        let lo = 0;
+        let hi = latest;
+        let found = null;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            const code = rpc(elHttp, 'eth_getCode', [addr, `0x${mid.toString(16)}`]);
+            if (code && code !== '0x') {
+                found = mid;
+                hi = mid - 1;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        if (found == null) return null;
+        const block = rpc(elHttp, 'eth_getBlockByNumber', [`0x${found.toString(16)}`, false]);
+        return String(parseInt(block.timestamp, 16));
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Resolve a prices/balances submission reference timestamp at/after beacon
+ * genesis *and* helper deployment. Stale GENESIS_BLOCK_TIMESTAMP from a
+ * previous Kurtosis run (or mainnet 1713420000) makes watchtower target a
+ * slot that has no Multicall2 code.
+ */
+function resolveSubmissionReferenceTimestamp(clHttp, elHttp, env) {
+    if (process.env.PRICE_BALANCE_SUBMISSION_REFERENCE_TIMESTAMP) {
+        return String(process.env.PRICE_BALANCE_SUBMISSION_REFERENCE_TIMESTAMP);
+    }
+
+    const liveGenesis = fetchGenesisTime(clHttp);
+    const envGenesis = env.GENESIS_BLOCK_TIMESTAMP && env.GENESIS_BLOCK_TIMESTAMP !== '0'
+        ? env.GENESIS_BLOCK_TIMESTAMP
+        : (process.env.GENESIS_BLOCK_TIMESTAMP && process.env.GENESIS_BLOCK_TIMESTAMP !== '0'
+            ? process.env.GENESIS_BLOCK_TIMESTAMP
+            : null);
+    // Prefer live CL genesis; env is only a fallback (it goes stale across redeploys).
+    let ref = liveGenesis || envGenesis;
+    if (!ref) return null;
+
+    const multicall = env.MULTICALL_ADDRESS
+        || env.ROCKETPOOL_DEVNET_MULTICALL_ADDRESS
+        || process.env.MULTICALL_ADDRESS
+        || '';
+    const helperTs = firstCodeTimestamp(elHttp, multicall);
+    if (helperTs && Number(helperTs) > Number(ref)) {
+        ref = helperTs;
+    }
+    return ref;
+}
+
 function main() {
     const args = parseArgs(process.argv);
     if (!args.settings) throw new Error('--settings required');
@@ -134,7 +193,7 @@ function main() {
     // Defaults match scripts/devnet-7/kurtosis-ports.env + network_params.yaml port_publisher.
     const elHttp = env.EL_HTTP || process.env.EL_HTTP || 'http://127.0.0.1:32003';
     const elWs = env.EL_WS || process.env.EL_WS || 'ws://127.0.0.1:32004';
-    const clHttp = env.CL_HTTP || process.env.CL_HTTP || 'http://127.0.0.1:33001';
+    const clHttp = env.CL_HTTP || process.env.CL_HTTP || 'http://127.0.0.1:33101';
     if (!elHttp || !clHttp) {
         throw new Error('EL_HTTP and CL_HTTP required (via --env or environment)');
     }
@@ -161,8 +220,9 @@ function main() {
     text = setSectionField(text, 'smartnode', 'projectName', path.basename(rpDir));
     text = setSectionField(text, 'smartnode', 'rewardsTreeMode', 'generate');
 
-    // P/B submission schedule must start at/after this chain's genesis (not mainnet 6AM epoch).
-    const pbRef = resolveSubmissionReferenceTimestamp(clHttp, env);
+    // P/B submission schedule must start at/after this chain's genesis (not mainnet 6AM epoch)
+    // and not before Multicall2 exists on this deploy.
+    const pbRef = resolveSubmissionReferenceTimestamp(clHttp, elHttp, env);
     if (pbRef) {
         text = setSectionField(text, 'smartnode', 'priceBalanceSubmissionReferenceTimestamp', `"${pbRef}"`);
     }

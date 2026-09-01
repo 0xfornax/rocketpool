@@ -51,7 +51,8 @@ node "${SCRIPT_DIR}/patch-master-deploy-kurtosis.js" "${MASTER_WORKDIR}/scripts/
 
 # Short oDAO prices/balances submit interval (300s) + relax stock 1h minimum
 # so seed-devnet can bootstrapSettingUint(300). Also rewards periods 28 → 4
-# so claim interval = 4 × 300s = 20 minutes.
+# so claim interval = 4 × 300s = 20 minutes. Vote phase 1/2: 1 week → 15 minutes.
+# Security upgrade.delay: 7 days → 10 minutes (veto window before execute-upgrade).
 SETTINGS_DIR="${MASTER_WORKDIR}/contracts/contract/dao/protocol/settings"
 SETTINGS_NETWORK_SOL="${SETTINGS_DIR}/RocketDAOProtocolSettingsNetwork.sol"
 SETTINGS_REWARDS_SOL="${SETTINGS_DIR}/RocketDAOProtocolSettingsRewards.sol"
