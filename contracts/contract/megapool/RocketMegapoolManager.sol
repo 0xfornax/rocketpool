@@ -6,6 +6,7 @@ import {RocketBase} from "../RocketBase.sol";
 import {RocketMegapoolInterface} from "../../interface/megapool/RocketMegapoolInterface.sol";
 import {RocketStorageInterface} from "../../interface/RocketStorageInterface.sol";
 import {RocketMegapoolManagerInterface} from "../../interface/megapool/RocketMegapoolManagerInterface.sol";
+import {RocketNetworkExitInterface} from "../../interface/network/RocketNetworkExitInterface.sol";
 import {
     BeaconStateVerifierInterface,
     VerifiedValidator,
@@ -165,6 +166,8 @@ contract RocketMegapoolManager is RocketBase, RocketMegapoolManagerInterface {
         uint64 recentEpoch = verified.slot / slotsPerEpoch;
         // Notify megapool
         _megapool.notifyExit(_validatorId, verified.validator.withdrawableEpoch, recentEpoch);
+        // Record voluntary exit accounting, or preserve an existing requested classification
+        RocketNetworkExitInterface(getContractAddress("rocketNetworkExit")).notifyMegapoolExit(address(_megapool), _validatorId);
     }
 
     /// @notice Verifies a versioned validator proof then notifies that the validator is not exiting
@@ -231,6 +234,8 @@ contract RocketMegapoolManager is RocketBase, RocketMegapoolManagerInterface {
         bytes memory pubkey = _megapool.getValidatorPubkey(_validatorId);
         require(verified.validatorPubkeyHash == keccak256(pubkey), "Pubkey does not match");
         _megapool.notifyFinalBalance(_validatorId, verified.amountInGwei, msg.sender, verified.withdrawalEpoch, verified.recentEpoch);
+        // Reconcile any requested or voluntary exit accounting
+        RocketNetworkExitInterface(getContractAddress("rocketNetworkExit")).notifyMegapoolFinalBalance(address(_megapool), _validatorId);
     }
 
     /// @dev Rejects stale proof anchors for all proof entrypoints
