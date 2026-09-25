@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Create (or refresh) a git worktree of the pre-Gloas baseline for Kurtosis deploy.
-# Default baseline ref is v1.4.1-dev (override with MASTER_REF).
+# Default baseline ref is master (v1.4.0). Override with MASTER_REF (e.g. v1.4.1-dev).
 # Compiles contracts in the worktree using the parent repo's node_modules.
 #
 # Usage:
 #   ./scripts/devnet-7/prepare-master-worktree.sh
-#   MASTER_REF=v1.4.1-dev MASTER_WORKDIR=/tmp/rp-baseline ./scripts/devnet-7/prepare-master-worktree.sh
+#   MASTER_REF=master MASTER_WORKDIR=/tmp/rp-baseline ./scripts/devnet-7/prepare-master-worktree.sh
+#   MASTER_REF=v1.4.1-dev MASTER_WORKDIR=.devnet-v141 ./scripts/devnet-7/prepare-master-worktree.sh
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MASTER_REF="${MASTER_REF:-v1.4.1-dev}"
+MASTER_REF="${MASTER_REF:-master}"
 MASTER_WORKDIR="${MASTER_WORKDIR:-${ROOT_DIR}/.devnet-master}"
 
 log() { printf '==> %s\n' "$*"; }
@@ -46,7 +47,7 @@ if [[ ! -e "${MASTER_WORKDIR}/node_modules" ]]; then
     fi
 fi
 
-# Patch deploy.js with Kurtosis profile (v1.4.1-dev BSV: 7 fork slots Altair..Gloas)
+# Patch deploy.js with Kurtosis profile (master BSV: 5 fork slots; v1.4.1-dev: 7)
 node "${SCRIPT_DIR}/patch-master-deploy-kurtosis.js" "${MASTER_WORKDIR}/scripts/deploy.js"
 
 # Short oDAO prices/balances submit interval (300s) + relax stock 1h minimum

@@ -3,10 +3,12 @@
 #
 # Flow:
 #   1. Launch Kurtosis (Fulu genesis; Gloas at epoch 1, ~6.4 min @ 12s slots)
-#   2. Deploy Rocket Pool from MASTER_REF (pre-Gloas baseline; default: v1.4.1-dev)
+#   2. Deploy Rocket Pool from MASTER_REF (pre-Gloas baseline; default: master / v1.4.0)
 #   3. Helpers + oDAO bootstrap + seed (operator ETH/RPL + deposit pool)
 #   4. Wait for Gloas
 #   5. Upgrade to THIS branch (v1.5 / RocketUpgradeOneDotFive)
+#
+#   1.4.0 → 1.4.1 is a separate step: ./scripts/devnet-7/upgrade-to-v1.4.1.sh
 #
 # Spec:    https://notes.ethereum.org/@ethpandaops/glamsterdam-devnet-7
 # Package: https://github.com/ethpandaops/ethereum-package
@@ -15,7 +17,7 @@
 #   ./scripts/devnet-7/deploy.sh
 #   ENCLAVE=my-devnet CLEAN=1 ./scripts/devnet-7/deploy.sh
 #   SKIP_KURTOSIS=1 PROVIDER_URL=http://127.0.0.1:8545 ./scripts/devnet-7/deploy.sh
-#   SKIP_UPGRADE=1 ./scripts/devnet-7/deploy.sh   # leave at baseline (v1.4.1-dev) only
+#   SKIP_UPGRADE=1 ./scripts/devnet-7/deploy.sh   # leave at baseline (master / v1.4.0) only
 #
 # Environment:
 #   ENCLAVE              Kurtosis enclave name (default: rp-devnet-7)
@@ -29,7 +31,7 @@
 #   SKIP_SEED=1          Skip ETH/RPL funding of SEED_ADDRESS and deposit-pool seed
 #   SKIP_REGISTER=1      Skip registering /srv/rocketpool3 Smart Node wallet as RP node
 #   SKIP_UPGRADE=1       Skip v1.5 upgrade (stay on baseline contracts)
-#   MASTER_REF           Git ref for baseline deploy (default: v1.4.1-dev)
+#   MASTER_REF           Git ref for baseline deploy (default: master = v1.4.0)
 #   MASTER_WORKDIR       Worktree path (default: <repo>/.devnet-master)
 #   PRIVATE_KEY          Guardian/deployer key (default: ethereum-package prefunded #0)
 #   ODAO_PRIVATE_KEY     oDAO member key (default: seed Smart Node wallet at RP_DIR account 0)
@@ -58,8 +60,9 @@
 #
 # Notes:
 #   - network_params.yaml uses mainnet preset (SSZ dimensions for Smart Node proofs).
-#   - v1.4.1-dev contracts — including megapool — are the pre-Gloas baseline;
+#   - master (v1.4.0) contracts — including megapool — are the pre-Gloas baseline;
 #     they are deployed as soon as the EL is ready. The v1.5 upgrade waits for Gloas.
+#     Use ./scripts/devnet-7/upgrade-to-v1.4.1.sh to move that deploy to v1.4.1.
 #   - Host ports are fixed via network_params.yaml port_publisher + kurtosis-ports.env
 #     (EL RPC 32003, EL WS 32004, CL HTTP 33101). sync_smartnode_config still rewrites
 #     odao-smartnode.env / networks-extra.yml / user-settings.yml when contract addresses change.
@@ -89,7 +92,7 @@ WAIT_TIMEOUT_SECS="${WAIT_TIMEOUT_SECS:-300}"
 # Wait for delayed Gloas before the v1.5 upgrade (not before baseline deploy).
 # Default covers gloas_fork_epoch: 1 @ 12s slots (~6.4 min) + margin.
 GLOAS_WAIT_TIMEOUT_SECS="${GLOAS_WAIT_TIMEOUT_SECS:-600}"
-MASTER_REF="${MASTER_REF:-v1.4.1-dev}"
+MASTER_REF="${MASTER_REF:-master}"
 MASTER_WORKDIR="${MASTER_WORKDIR:-${ROOT_DIR}/.devnet-master}"
 # Local Smart Node / megapool operator funded after each deploy
 # Default SEED_ADDRESS matches /srv/rocketpool3 HD wallet index 0.
@@ -319,7 +322,7 @@ wait_for_rpc() {
 }
 
 # Poll the CL until head reports eth-consensus-version: gloas (or state is past fork epoch).
-# Used before the v1.5 upgrade only — v1.4.1-dev baseline deploys on pre-Gloas Fulu.
+# Used before the v1.5 upgrade only — master / v1.4.0 baseline deploys on pre-Gloas Fulu.
 wait_for_gloas() {
     local cl_http
     cl_http="$(resolve_cl_http || true)"
@@ -488,11 +491,9 @@ extract_genesis_params() {
     export SECONDS_PER_SLOT="$seconds_per_slot"
     export SLOTS_PER_HISTORICAL_ROOT="$slots_per_historical_root"
 
-    # Baseline (v1.4.1-dev) BSV: uint64[7] Altair..Gloas. Altair–Fulu at genesis (0);
-    # Gloas slot MUST match network_params.yaml / CL GLOAS_FORK_EPOCH * SLOTS_PER_EPOCH.
-    # Mismatch (e.g. BSV thinks Gloas@32 while chain has Gloas@3200) makes BSV use the
-    # progressive-list path while Smart Node still builds Fulu list proofs →
-    # "Invalid witness length" on stake / notify-exit.
+    # master / v1.4.0 BSV: uint64[5] Altair..Electra (all at genesis on this Kurtosis schedule).
+    # v1.4.1 BSV (upgrade-to-v1.4.1.sh): uint64[7] Altair..Gloas; Gloas slot MUST match
+    # network_params.yaml / CL GLOAS_FORK_EPOCH * SLOTS_PER_EPOCH.
     local gloas_epoch_for_bsv=""
     local slots_per_epoch_for_bsv="32"
     if [[ -n "${cl_http:-}" ]]; then
@@ -507,9 +508,11 @@ extract_genesis_params() {
     if [[ -z "$gloas_epoch_for_bsv" && -f "$NETWORK_PARAMS" ]]; then
         gloas_epoch_for_bsv="$(sed -nE 's/^[[:space:]]*gloas_fork_epoch:[[:space:]]*([0-9]+).*/\1/p' "$NETWORK_PARAMS" | head -n1)"
     fi
-    gloas_epoch_for_bsv="${gloas_epoch_for_bsv:-1}"
+    gloas_epoch_for_bsv="${gloas_epoch_for_bsv:-1000}"
     local gloas_slot_for_bsv=$((gloas_epoch_for_bsv * slots_per_epoch_for_bsv))
-    export FORK_SLOTS_MASTER="${FORK_SLOTS_MASTER:-0,0,0,0,0,0,${gloas_slot_for_bsv}}"
+    export FORK_SLOTS_MASTER="${FORK_SLOTS_MASTER:-0,0,0,0,0}"
+    export FORK_SLOTS_V141="${FORK_SLOTS_V141:-0,0,0,0,0,0,${gloas_slot_for_bsv}}"
+    export GLOAS_SLOT="${GLOAS_SLOT:-$gloas_slot_for_bsv}"
     # v1.5 BSV on this branch: typically Altair..Fulu (6) + separate genesis immutables.
     export FORK_SLOTS="${FORK_SLOTS:-0,0,0,0,0,0}"
 
@@ -517,9 +520,10 @@ extract_genesis_params() {
     log "Genesis validators root:   ${GENESIS_VALIDATOR_ROOT}"
     log "Seconds per slot:          ${SECONDS_PER_SLOT}"
     log "Slots per historical root: ${SLOTS_PER_HISTORICAL_ROOT}"
-    log "Gloas epoch/slot (BSV):    ${gloas_epoch_for_bsv} / ${gloas_slot_for_bsv}"
-    log "Fork slots baseline (A..Gloas, 7): ${FORK_SLOTS_MASTER}"
-    log "Fork slots v1.5:                   ${FORK_SLOTS}"
+    log "Gloas epoch/slot (v1.4.1): ${gloas_epoch_for_bsv} / ${gloas_slot_for_bsv}"
+    log "Fork slots baseline (A..Electra, 5): ${FORK_SLOTS_MASTER}"
+    log "Fork slots v1.4.1 (A..Gloas, 7):     ${FORK_SLOTS_V141}"
+    log "Fork slots v1.5:                     ${FORK_SLOTS}"
 }
 
 prepare_master_worktree() {
@@ -577,7 +581,7 @@ update_smartnode_config() {
     sync_smartnode_config
 }
 
-# Baseline: deploy contracts from MASTER_REF (default v1.4.1-dev) into the Kurtosis chain.
+# Baseline: deploy contracts from MASTER_REF (default master / v1.4.0) into the Kurtosis chain.
 deploy_rocket_pool_master() {
     local provider_url="$1"
     prepare_master_worktree
@@ -598,7 +602,7 @@ deploy_rocket_pool_master() {
         export GENESIS_VALIDATOR_ROOT
         export SECONDS_PER_SLOT
         export SLOTS_PER_HISTORICAL_ROOT
-        export FORK_SLOTS_MASTER="${FORK_SLOTS_MASTER:-0,0,0,0,0,0,32}"
+        export FORK_SLOTS_MASTER="${FORK_SLOTS_MASTER:-0,0,0,0,0}"
         export FORK_SLOTS="${FORK_SLOTS:-$FORK_SLOTS_MASTER}"
         export DEPLOY_GAS_LIMIT
         # Write deployment artifacts into the parent repo (shared path)
@@ -622,7 +626,7 @@ deploy_rocket_pool_master() {
     sync_smartnode_config
 }
 
-# After Gloas + v1.4.1-dev baseline: upgrade selected contracts to this branch (v1.5).
+# After Gloas + master / v1.4.0 baseline: upgrade selected contracts to this branch (v1.5).
 upgrade_rocket_pool_v1_5() {
     local provider_url="$1"
     log "Upgrading Rocket Pool contracts to THIS branch (v1.5 / RocketUpgradeOneDotFive)"
@@ -862,15 +866,17 @@ main() {
                     [[ -n "$vs" ]] && spe="$vs"
                 fi
             fi
-            ge="${ge:-1}"
+            ge="${ge:-1000}"
             ge_slot=$((ge * spe))
-            export FORK_SLOTS_MASTER="0,0,0,0,0,0,${ge_slot}"
+            export FORK_SLOTS_MASTER="0,0,0,0,0"
+            export FORK_SLOTS_V141="0,0,0,0,0,0,${ge_slot}"
+            export GLOAS_SLOT="$ge_slot"
         fi
         export FORK_SLOTS="${FORK_SLOTS:-0,0,0,0,0,0}"
         if [[ "$GENESIS_BLOCK_TIMESTAMP" == "0" ]]; then
             log "warning: GENESIS_BLOCK_TIMESTAMP is 0; set it for correct BeaconStateVerifier immutables"
         fi
-        log "Fork slots baseline (A..Gloas, 7): ${FORK_SLOTS_MASTER}"
+        log "Fork slots baseline (A..Electra, 5): ${FORK_SLOTS_MASTER}"
     fi
 
     if [[ "$SKIP_DEPLOY" == "1" ]]; then
@@ -885,7 +891,7 @@ main() {
         return 0
     fi
 
-    # --- Phase A: v1.4.1-dev baseline (pre-Gloas stack, incl. megapool) ---
+    # --- Phase A: master / v1.4.0 baseline (pre-Gloas stack, incl. megapool) ---
     # Do NOT wait for Gloas here — baseline contracts match what ships before the
     # Gloas/v1.5 upgrade on production.
     # (deploy_rocket_pool_master already calls sync_smartnode_config)

@@ -40,7 +40,7 @@ network_params:
   # (SLOTS_PER_HISTORICAL_ROOT=8192, SLOTS_PER_EPOCH=32, etc. — do NOT switch to minimal.)
   preset: mainnet
   # Genesis on Fulu (Electra+Fulu already active). Gloas (ePBS / CL SSZ changes)
-  # is delayed so the v1.4.1-dev RP stack can be deployed and exercised first —
+  # is delayed so the v1.4.0 (master) RP stack can be deployed and exercised first —
   # matching production, where megapool (v1.4) is already live before Gloas/v1.5.
   #
   # Mainnet-like slot time (12s); SSZ vector widths kept via preset: mainnet.
@@ -53,7 +53,7 @@ network_params:
   capella_fork_epoch: 0
   bellatrix_fork_epoch: 0
   altair_fork_epoch: 0
-  gloas_fork_epoch: 8
+  gloas_fork_epoch: 1000
   seconds_per_slot: 12
   # Faster beacon-deposit → activation pipeline without changing slot time.
   #

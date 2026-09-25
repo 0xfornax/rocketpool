@@ -2,8 +2,9 @@
  * Patch a baseline-branch scripts/deploy.js to add (or replace) a Kurtosis chain
  * profile that reads genesis immutables from the environment.
  *
- * v1.4.1-dev BeaconStateVerifier uses uint64[7] fork slots
- * (Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas).
+ * Detects BSV fork-slot arity from the existing mainnet profile:
+ *   - master / v1.4.0: uint64[5]  Altair..Electra
+ *   - v1.4.1-dev:      uint64[7]  Altair..Gloas
  *
  * Usage:
  *   node scripts/devnet-7/patch-master-deploy-kurtosis.js /path/to/worktree/scripts/deploy.js
@@ -18,12 +19,43 @@ if (!target || !fs.existsSync(target)) {
 
 let src = fs.readFileSync(target, 'utf8');
 
-// 7 slots: Altair..Gloas. On this Kurtosis schedule Altair–Fulu are at genesis (0);
-// Gloas is delayed (default epoch 1 → slot 32; wall-clock depends on seconds_per_slot).
-// Override via FORK_SLOTS_MASTER.
+function countForkSlots(text) {
+    const m = text.match(/'mainnet'\s*:\s*\{[\s\S]*?forkSlots:\s*\[([\s\S]*?)\]/);
+    const block = m ? m[1] : (text.match(/forkSlots:\s*\[([\s\S]*?)\]/) || [])[1];
+    if (!block) return 5;
+    const n = (block.match(/\d+n/g) || []).length;
+    return n === 7 ? 7 : 5;
+}
+
+function defaultSlots(count) {
+    if (count === 7) {
+        const gloas = process.env.GLOAS_SLOT || '32000';
+        return ['0', '0', '0', '0', '0', '0', gloas];
+    }
+    return Array(count).fill('0');
+}
+
+function resolveSlots(count) {
+    const raw = process.env.FORK_SLOTS_MASTER;
+    if (!raw) return defaultSlots(count);
+    const slots = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    if (slots.length === count) return slots;
+    if (slots.length > count) return slots.slice(0, count);
+    console.warn(
+        `FORK_SLOTS_MASTER has ${slots.length} values; baseline BSV wants ${count}. Using defaults.`,
+    );
+    return defaultSlots(count);
+}
+
+const forkCount = countForkSlots(src);
+const slots = resolveSlots(forkCount);
+const forkComment = forkCount === 7
+    ? 'v1.4.1-dev BSV uses uint64[7] fork slots (Altair..Gloas).'
+    : 'master / v1.4.0 BSV uses uint64[5] fork slots (Altair..Electra).';
+
 const kurtosisBlock = `
     // Local Kurtosis network (injected by scripts/devnet-7 for baseline deploy).
-    // v1.4.1-dev BSV uses uint64[7] fork slots (Altair..Gloas).
+    // ${forkComment}
     'kurtosis': {
         deployer: {
             depositAddress: '0x00000000219ab540356cBB839Cbe05303d7705Fa',
@@ -46,10 +78,7 @@ const kurtosisBlock = `
             beaconRootsHistoryBufferLength: 8191n,
             beaconRoots: process.env.BEACON_ROOTS
                 || '0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02',
-            // Last slot is Gloas activation slot (= GLOAS_FORK_EPOCH * SLOTS_PER_EPOCH).
-            // Must match network_params.yaml / live CL — wrong value → progressive vs list
-            // SSZ path mismatch → "Invalid witness length" on stake proofs.
-            forkSlots: (process.env.FORK_SLOTS_MASTER || '0,0,0,0,0,0,3200')
+            forkSlots: (process.env.FORK_SLOTS_MASTER || '${slots.join(',')}')
                 .split(',')
                 .map((s) => BigInt(s.trim())),
             deployThirdParty: false,
@@ -61,7 +90,6 @@ const kurtosisBlock = `
 `;
 
 // Remove any previous injected kurtosis profile so re-runs stay correct when BSV changes.
-// Matches both single-quoted 'kurtosis' and double-quoted forms with trailing comma block.
 const kurtosisRe = /[ \t]*\/\/ Local Kurtosis network[\s\S]*?'kurtosis'\s*:\s*\{[\s\S]*?\n[ \t]*\},?\n/;
 const kurtosisReLoose = /[ \t]*'kurtosis'\s*:\s*\{[\s\S]*?deployStorageHelper[\s\S]*?\n[ \t]*\},?\n/;
 
@@ -79,4 +107,4 @@ if (!src.includes("'hardhat':")) {
 }
 src = src.replace("'hardhat':", `${kurtosisBlock}    'hardhat':`);
 fs.writeFileSync(target, src, 'utf8');
-console.log(`Patched kurtosis profile into ${target}`);
+console.log(`Patched kurtosis profile into ${target} (BSV forkSlots=${forkCount}: ${slots.join(',')})`);
