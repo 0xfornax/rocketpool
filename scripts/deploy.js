@@ -33,6 +33,7 @@ const chainOpts = {
                 269568n * 32n,  // Deneb
                 364032n * 32n,  // Electra
                 411392n * 32n,  // Fulu
+                18446744073709551615n, // Gloas (not configured)
             ]
         },
         deployStorageHelper: false,
@@ -54,6 +55,7 @@ const chainOpts = {
                 0n,             // Deneb
                 2048n * 32n,    // Electra
                 50688n * 32n,   // Fulu
+                18446744073709551615n, // Gloas (not configured)
             ]
         },
         deployStorageHelper: true,
@@ -75,6 +77,7 @@ const chainOpts = {
             0n, // Deneb
             0n, // Electra
             0n, // Fulu
+            18446744073709551615n, // Gloas (not configured)
         ],
         },
         deployStorageHelper: true,

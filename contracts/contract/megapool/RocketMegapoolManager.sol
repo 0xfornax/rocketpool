@@ -2,6 +2,7 @@
 pragma solidity 0.8.30;
 
 import {RocketMegapoolStorageLayout} from "./RocketMegapoolStorageLayout.sol";
+import {RocketNetworkExitInterface} from "../../interface/network/RocketNetworkExitInterface.sol";
 import {RocketBase} from "../RocketBase.sol";
 import {RocketMegapoolInterface} from "../../interface/megapool/RocketMegapoolInterface.sol";
 import {RocketStorageInterface} from "../../interface/RocketStorageInterface.sol";
@@ -26,7 +27,7 @@ contract RocketMegapoolManager is RocketBase, RocketMegapoolManagerInterface {
     uint256 constant internal slotRecencyThreshold = 1 hours;
 
     constructor(RocketStorageInterface _rocketStorageAddress) RocketBase(_rocketStorageAddress) {
-        version = 2;
+        version = 3;
         // Precompute static storage keys
         challengerKey = keccak256("last.trusted.node.megapool.challenger");
         setCountKey = keccak256("megapool.validator.set.count");

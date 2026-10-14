@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 import {RocketStorageInterface} from "../../interface/RocketStorageInterface.sol";
 import {
+    ParticipationProof,
     ValidatorProof,
     WithdrawalProof,
     SlotProof,
@@ -18,6 +19,10 @@ contract BeaconStateVerifierHarness is BeaconStateVerifier {
         uint64[7] memory _forkSlots,
         address _beaconRoots
     ) BeaconStateVerifier(_rocketStorageAddress, _slotsPerHistoricalRoot, _forkSlots, _beaconRoots) {}
+
+    function verifyParticipationProof(uint64 _slotTimestamp, uint64 _slot, ParticipationProof calldata _proof) external view returns (bool) {
+        return _verifyParticipation(_slotTimestamp, _slot, _proof);
+    }
 
     function verifyValidatorProof(
         uint64 _slotTimestamp,
