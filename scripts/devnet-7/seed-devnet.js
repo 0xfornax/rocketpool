@@ -1,12 +1,15 @@
 /**
  * Seed a Kurtosis Rocket Pool deploy with operator funds and deposit-pool ETH.
  *
- * Always run after contracts are deployed (and preferably after oDAO bootstrap).
+ * Run after contracts are deployed and deposits are enabled.
+ * Use --deposit-pool-only for early pool funding; DEPOSIT_POOL_ETH=0 skips it
+ * during the subsequent operator/settings seed.
  *
  * Default actions:
- *   1. Send SEED_ETH (default 100) to SEED_ADDRESS
- *   2. Swap dummy RPL → RPL and transfer SEED_RPL (default 10000) to SEED_ADDRESS
- *   3. Deposit DEPOSIT_POOL_ETH (default 500) into RocketDepositPool
+ *   1. Deposit DEPOSIT_POOL_ETH (default 500) into RocketDepositPool
+ *   2. Send SEED_ETH (default 100) to SEED_ADDRESS
+ *   3. Transfer SEED_RPL (default 10000) to SEED_ADDRESS from guardian RPL
+ *      (deploy.sh swaps once up front; standalone runs swap only a deficit)
  *   4. Deposit REWARDS_POOL_RPL (default 1000) into RocketVault for rocketRewardsPool
  *      so watchtower can submit a rewards tree before the first 1-day RPL inflation mint
  *
@@ -21,6 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const { ethers } = require('ethers');
+const { ensureGuardianRpl } = require('./rpl-funding');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEPLOYMENT_FILE = process.env.DEPLOYMENT_FILE
@@ -43,6 +47,7 @@ const DEFAULT_REWARDS_POOL_RPL = '1000';
 
 const ERC20_ABI = [
     'function balanceOf(address) view returns (uint256)',
+    'function allowance(address,address) view returns (uint256)',
     'function transfer(address to, uint256 amount) returns (bool)',
     'function approve(address spender, uint256 amount) returns (bool)',
 ];
@@ -122,6 +127,78 @@ async function main() {
         DEPOSIT_SETTINGS_ABI,
         provider,
     );
+
+    // Fund the pool before operator funding or any optional devnet setup.
+    if (depositPoolEth > 0n) {
+        const enabled = await depositSettings.getDepositEnabled();
+        if (!enabled) {
+            throw new Error('deposit.enabled is false; cannot seed deposit pool');
+        }
+        const maxPool = await depositSettings.getMaximumDepositPoolSize();
+        const poolBal = await depositPool.getBalance();
+        const neededMax = poolBal + depositPoolEth;
+        if (maxPool < neededMax) {
+            const bootstrapDisabled = await daoProtocol.getBootstrapModeDisabled();
+            if (bootstrapDisabled) {
+                throw new Error(
+                    `deposit.pool.maximum (${ethers.formatEther(maxPool)}) too low for +${ethers.formatEther(depositPoolEth)} ETH `
+                    + `and bootstrap mode is closed`,
+                );
+            }
+            // Raise cap to at least current + deposit + buffer (10k ETH)
+            const newMax = neededMax > ethers.parseEther('10000') ? neededMax : ethers.parseEther('10000');
+            console.log(`  - Raising deposit.pool.maximum to ${ethers.formatEther(newMax)} ETH...`);
+            const tx = await daoProtocol.bootstrapSettingUint(
+                'rocketDAOProtocolSettingsDeposit',
+                'deposit.pool.maximum',
+                newMax,
+            );
+            await tx.wait();
+            console.log(`    ok ${tx.hash}`);
+        }
+
+        const gBal = await provider.getBalance(guardian.address);
+        if (gBal < depositPoolEth) {
+            throw new Error(`Guardian has only ${ethers.formatEther(gBal)} ETH; need ${ethers.formatEther(depositPoolEth)} for deposit pool`);
+        }
+        // Full deposit path (mint rETH + vault + optional assign) costs ~1.5–2.5M gas.
+        // Some geth builds under-estimate; a ~281k limit OOGs with a bare CALL_EXCEPTION.
+        const gasFloor = BigInt(process.env.DEPOSIT_GAS_LIMIT || '5000000');
+        let gasLimit = gasFloor;
+        try {
+            const estimated = await depositPool.deposit.estimateGas({ value: depositPoolEth });
+            const buffered = (estimated * 150n) / 100n;
+            if (buffered > gasLimit) gasLimit = buffered;
+            console.log(`  - Depositing ${ethers.formatEther(depositPoolEth)} ETH into RocketDepositPool...`);
+            console.log(`    estimateGas=${estimated} gasLimit=${gasLimit}`);
+        } catch (e) {
+            console.log(`  - Depositing ${ethers.formatEther(depositPoolEth)} ETH into RocketDepositPool...`);
+            console.log(`    (estimateGas failed: ${e.shortMessage || e.message}; using gasLimit=${gasLimit})`);
+            // Preflight for a useful revert string when estimate fails
+            try {
+                await depositPool.deposit.staticCall({ value: depositPoolEth });
+            } catch (e2) {
+                throw new Error(
+                    `deposit() would revert: ${e2.reason || e2.shortMessage || e2.message}`,
+                );
+            }
+        }
+        const tx = await depositPool.deposit({ value: depositPoolEth, gasLimit });
+        const rc = await tx.wait();
+        if (rc.status !== 1) {
+            throw new Error(`deposit() failed status=${rc.status} gasUsed=${rc.gasUsed} (likely OOG if gasUsed≈gasLimit)`);
+        }
+        console.log(`    ok ${tx.hash} gasUsed=${rc.gasUsed}`);
+        const after = await depositPool.getBalance();
+        console.log(`    pool balance now ${ethers.formatEther(after)} ETH`);
+    }
+
+
+    if (process.argv.includes('--deposit-pool-only')) {
+        console.log('Deposit-pool seed complete');
+        provider.destroy();
+        return;
+    }
 
     // Min allowed by RocketDAOProtocolSettingsMegapool.setSettingUint guardrail.
     // Mainnet default is 112; with short kurtosis exit timelines withdrawable_epoch
@@ -476,35 +553,19 @@ async function main() {
         console.log(`    ok ${tx.hash}`);
     }
 
-    // --- 2) RPL to seed address + rewards pool (dummy → swap → transfer / vault deposit) ---
+    // --- 2) RPL to seed address + rewards pool from the guardian reserve ---
     {
-        const rplNeeded = seedRpl + rewardsPoolRpl;
-        let dummyBal = await dummyRpl.balanceOf(guardian.address);
-        if (dummyBal < rplNeeded) {
-            // Guardian is usually minted the full fixed supply at deploy; mint if artifact supports it.
-            console.log(`  - Guardian DRPL low (${ethers.formatEther(dummyBal)}); attempting mint...`);
-            try {
-                const mintTx = await dummyRpl.mint(guardian.address, rplNeeded);
-                await mintTx.wait();
-                dummyBal = await dummyRpl.balanceOf(guardian.address);
-            } catch (e) {
-                throw new Error(`Insufficient DRPL for seed and mint failed: ${e.shortMessage || e.message}`);
-            }
+        const currentRewards = await vault.balanceOfToken('rocketRewardsPool', await rpl.getAddress());
+        const rewardsDeficit = rewardsPoolRpl > currentRewards ? rewardsPoolRpl - currentRewards : 0n;
+        const seedTransfer = seedAddress.toLowerCase() === guardian.address.toLowerCase() ? 0n : seedRpl;
+        await ensureGuardianRpl({ guardian, rpl, dummyRpl, amount: seedTransfer + rewardsDeficit });
+        let tx;
+        if (seedTransfer > 0n) {
+            console.log(`  - Transfer ${ethers.formatEther(seedTransfer)} RPL to ${seedAddress}...`);
+            tx = await rpl.transfer(seedAddress, seedTransfer);
+            await tx.wait();
+            console.log(`    ok ${tx.hash}`);
         }
-        console.log(`  - Approve DRPL for RPL swap (${ethers.formatEther(rplNeeded)})...`);
-        let tx = await dummyRpl.approve(await rpl.getAddress(), rplNeeded);
-        await tx.wait();
-        console.log(`    ok ${tx.hash}`);
-
-        console.log('  - Swap DRPL → RPL...');
-        tx = await rpl.swapTokens(rplNeeded);
-        await tx.wait();
-        console.log(`    ok ${tx.hash}`);
-
-        console.log(`  - Transfer ${ethers.formatEther(seedRpl)} RPL to ${seedAddress}...`);
-        tx = await rpl.transfer(seedAddress, seedRpl);
-        await tx.wait();
-        console.log(`    ok ${tx.hash}`);
 
         // Fund rocketRewardsPool so getPendingRPLRewards() > 0 before the first
         // 1-day inflation interval elapses (required for Merkle tree generation).
@@ -535,70 +596,6 @@ async function main() {
         }
     }
 
-    // --- 3) User deposit into deposit pool ---
-    {
-        const enabled = await depositSettings.getDepositEnabled();
-        if (!enabled) {
-            throw new Error('deposit.enabled is false; cannot seed deposit pool');
-        }
-        const maxPool = await depositSettings.getMaximumDepositPoolSize();
-        const poolBal = await depositPool.getBalance();
-        const neededMax = poolBal + depositPoolEth;
-        if (maxPool < neededMax) {
-            const bootstrapDisabled = await daoProtocol.getBootstrapModeDisabled();
-            if (bootstrapDisabled) {
-                throw new Error(
-                    `deposit.pool.maximum (${ethers.formatEther(maxPool)}) too low for +${ethers.formatEther(depositPoolEth)} ETH `
-                    + `and bootstrap mode is closed`,
-                );
-            }
-            // Raise cap to at least current + deposit + buffer (10k ETH)
-            const newMax = neededMax > ethers.parseEther('10000') ? neededMax : ethers.parseEther('10000');
-            console.log(`  - Raising deposit.pool.maximum to ${ethers.formatEther(newMax)} ETH...`);
-            const tx = await daoProtocol.bootstrapSettingUint(
-                'rocketDAOProtocolSettingsDeposit',
-                'deposit.pool.maximum',
-                newMax,
-            );
-            await tx.wait();
-            console.log(`    ok ${tx.hash}`);
-        }
-
-        const gBal = await provider.getBalance(guardian.address);
-        if (gBal < depositPoolEth) {
-            throw new Error(`Guardian has only ${ethers.formatEther(gBal)} ETH; need ${ethers.formatEther(depositPoolEth)} for deposit pool`);
-        }
-        // Full deposit path (mint rETH + vault + optional assign) costs ~1.5–2.5M gas.
-        // Some geth builds under-estimate; a ~281k limit OOGs with a bare CALL_EXCEPTION.
-        const gasFloor = BigInt(process.env.DEPOSIT_GAS_LIMIT || '5000000');
-        let gasLimit = gasFloor;
-        try {
-            const estimated = await depositPool.deposit.estimateGas({ value: depositPoolEth });
-            const buffered = (estimated * 150n) / 100n;
-            if (buffered > gasLimit) gasLimit = buffered;
-            console.log(`  - Depositing ${ethers.formatEther(depositPoolEth)} ETH into RocketDepositPool...`);
-            console.log(`    estimateGas=${estimated} gasLimit=${gasLimit}`);
-        } catch (e) {
-            console.log(`  - Depositing ${ethers.formatEther(depositPoolEth)} ETH into RocketDepositPool...`);
-            console.log(`    (estimateGas failed: ${e.shortMessage || e.message}; using gasLimit=${gasLimit})`);
-            // Preflight for a useful revert string when estimate fails
-            try {
-                await depositPool.deposit.staticCall({ value: depositPoolEth });
-            } catch (e2) {
-                throw new Error(
-                    `deposit() would revert: ${e2.reason || e2.shortMessage || e2.message}`,
-                );
-            }
-        }
-        const tx = await depositPool.deposit({ value: depositPoolEth, gasLimit });
-        const rc = await tx.wait();
-        if (rc.status !== 1) {
-            throw new Error(`deposit() failed status=${rc.status} gasUsed=${rc.gasUsed} (likely OOG if gasUsed≈gasLimit)`);
-        }
-        console.log(`    ok ${tx.hash} gasUsed=${rc.gasUsed}`);
-        const after = await depositPool.getBalance();
-        console.log(`    pool balance now ${ethers.formatEther(after)} ETH`);
-    }
 
     const ethBal = await provider.getBalance(seedAddress);
     const rplBal = await rpl.balanceOf(seedAddress);

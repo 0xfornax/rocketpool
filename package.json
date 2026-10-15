@@ -13,6 +13,7 @@
     "deploy": "hardhat run scripts/deploy-entry.cjs",
     "report:node-voting": "node scripts/report-node-voting-enabled.js",
     "test": "npm run test:types && npm run test:solidity && npm run test:unit:javascript && npm run test:integration",
+    "test:proofs:gloas": "npm run test:unit:javascript -- --grep BeaconStateVerifier",
     "test:types": "tsc --noEmit",
     "test:solidity": "hardhat test solidity",
     "test:unit:javascript": "hardhat test mocha test-entrypoints/javascript-unit-tests.mjs --bail",

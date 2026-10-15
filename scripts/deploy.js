@@ -18,7 +18,7 @@ const preamble = process.env.PREAMBLE || null;
 const etherscanApiKey = process.env.ETHERSCAN_API_KEY || null;
 
 // Optional env overrides used by the Kurtosis / private-network deploy path.
-// BeaconStateVerifier expects uint64[6]: Altair, Bellatrix, Capella, Deneb, Electra, Fulu.
+// BeaconStateVerifier expects uint64[7]: Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas.
 function envBigInt(name, fallback) {
     return process.env[name] !== undefined && process.env[name] !== ''
         ? BigInt(process.env[name])
@@ -36,8 +36,8 @@ function parseForkSlots(fallback) {
         return fallback;
     }
     const parts = process.env.FORK_SLOTS.split(',').map((s) => BigInt(s.trim()));
-    if (parts.length !== 6) {
-        throw new Error(`FORK_SLOTS must contain 6 comma-separated slot numbers, got ${parts.length}`);
+    if (parts.length !== 7) {
+        throw new Error(`FORK_SLOTS must contain 7 comma-separated slot numbers, got ${parts.length}`);
     }
     return parts;
 }
@@ -113,12 +113,7 @@ const chainOpts = {
     'kurtosis': {
         deployer: {
             depositAddress: '0x00000000219ab540356cBB839Cbe05303d7705Fa',
-            fixedSupplyTokenAddress: null,
-            genesisBlockTimestamp: envBigInt('GENESIS_BLOCK_TIMESTAMP', 0n),
-            genesisValidatorRoot: envHex(
-                'GENESIS_VALIDATOR_ROOT',
-                '0x0000000000000000000000000000000000000000000000000000000000000000',
-            ),
+            rocketTokenRPLFixedSupply: null,
             secondsPerSlot: envBigInt('SECONDS_PER_SLOT', 12n),
             // ethereum-package mainnet preset (scripts/devnet-7/network_params.yaml).
             // Must match CL SLOTS_PER_HISTORICAL_ROOT (8192) for BeaconStateVerifier.
@@ -132,6 +127,7 @@ const chainOpts = {
                 0n, // Deneb
                 0n, // Electra
                 0n, // Fulu
+                18446744073709551615n, // Gloas; override for the target chain
             ]),
             // Multicall2 + EthBalanceChecker for Smart Node (native/hybrid) against Kurtosis.
             deployThirdParty: true,

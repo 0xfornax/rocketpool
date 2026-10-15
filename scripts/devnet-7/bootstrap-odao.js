@@ -14,7 +14,7 @@
  *               node scripts/devnet-7/bootstrap-odao.js
  *
  * Flow:
- *   1. Fund member with ETH (gas) if needed, then DRPL → swap to RPL (bond amount)
+ *   1. Fund member with ETH (gas) if needed, then transfer RPL from guardian (bond amount)
  *   2. Register member as a Rocket Pool node
  *   3. Guardian bootstrapMember (invite while bootstrap mode is open)
  *   4. Member actionJoin (lock RPL bond)
@@ -29,12 +29,14 @@
  * Optional:
  *   ODAO_PRIVATE_KEY=0x...  override member key (skips Smart Node wallet load)
  *   ODAO_MEMBER_ID / ODAO_MEMBER_URL / ODAO_OUTPUT
+ *   TX_GAS_MIN (default 3000000) / TX_GAS_MULTIPLIER / TX_GAS_CAP
  */
 
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { ethers } = require('ethers');
+const { ensureGuardianRpl, RPL_ABI, DRPL_ABI } = require('./rpl-funding');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEPLOYMENT_FILE = process.env.DEPLOYMENT_FILE
@@ -50,12 +52,22 @@ const DEFAULT_RP_DIR = process.env.RP_DIR || '/srv/rocketpool3';
 // Minimum ETH kept on the member for registerNode / actionJoin gas.
 const MEMBER_MIN_ETH = ethers.parseEther(process.env.ODAO_MEMBER_MIN_ETH || '5');
 
-// Geth rejects eth_sendRawTransaction when gasLimit > txfeecap/rpc gas cap
-// (default 16_777_216). Do NOT reuse DEPLOY_GAS_LIMIT (150M) for ordinary txs —
-// let the provider estimate, with a small safety multiplier.
+// Bootstrap can straddle the Gloas activation: an estimate from the preceding
+// block uses cheaper storage writes. A 20% buffer alone is insufficient (join
+// estimated ~342k before the fork but needed ~837k afterwards). Keep a floor
+// for these state-writing transactions as well as buffering larger estimates.
+// Do NOT reuse DEPLOY_GAS_LIMIT (150M) for ordinary transactions.
+const TX_GAS_MIN = BigInt(process.env.TX_GAS_MIN || '3000000');
 const TX_GAS_MULTIPLIER = Number(process.env.TX_GAS_MULTIPLIER || '1.2');
 // Soft ceiling under typical geth 2^24-1 cap (leave headroom).
 const TX_GAS_CAP = BigInt(process.env.TX_GAS_CAP || '16000000');
+
+if (!Number.isFinite(TX_GAS_MULTIPLIER) || TX_GAS_MULTIPLIER < 1) {
+    throw new Error('TX_GAS_MULTIPLIER must be a finite number >= 1');
+}
+if (TX_GAS_MIN <= 0n || TX_GAS_CAP < TX_GAS_MIN) {
+    throw new Error('Require 0 < TX_GAS_MIN <= TX_GAS_CAP');
+}
 
 function normalizeKey(k) {
     if (!k) return k;
@@ -164,7 +176,7 @@ async function tx(sendPromise, label) {
 }
 
 /**
- * Estimate gas for a contract method and clamp to a safe limit under geth's cap.
+ * Buffer estimates with a fork-transition floor, within the configured cap.
  * @param {ethers.Contract} contract
  * @param {string} method
  * @param {any[]} args
@@ -181,8 +193,13 @@ async function gasOverrides(contract, method, args, signer, extra = {}) {
         estimated = 3_000_000n;
         console.log(`    (estimateGas failed for ${method}, using ${estimated}: ${e.shortMessage || e.message})`);
     }
+    if (estimated > TX_GAS_CAP) {
+        throw new Error(`${method} needs ${estimated} gas, exceeding TX_GAS_CAP=${TX_GAS_CAP}`);
+    }
     const withBuffer = BigInt(Math.ceil(Number(estimated) * TX_GAS_MULTIPLIER));
-    const gasLimit = withBuffer > TX_GAS_CAP ? TX_GAS_CAP : withBuffer;
+    const withFloor = withBuffer < TX_GAS_MIN ? TX_GAS_MIN : withBuffer;
+    const gasLimit = withFloor > TX_GAS_CAP ? TX_GAS_CAP : withFloor;
+    console.log(`    ${method}: estimateGas=${estimated} gasLimit=${gasLimit}`);
     return { ...extra, gasLimit };
 }
 
@@ -238,26 +255,8 @@ async function main() {
         provider,
     );
 
-    const dummyRpl = new ethers.Contract(
-        addr(deployment, 'RocketTokenDummyRPL'),
-        [
-            'function balanceOf(address) view returns (uint256)',
-            'function transfer(address to, uint256 amount) returns (bool)',
-            'function approve(address spender, uint256 amount) returns (bool)',
-            'function mint(address to, uint256 amount)',
-        ],
-        provider,
-    );
-
-    const rpl = new ethers.Contract(
-        addr(deployment, 'RocketTokenRPL'),
-        [
-            'function balanceOf(address) view returns (uint256)',
-            'function approve(address spender, uint256 amount) returns (bool)',
-            'function swapTokens(uint256 amount)',
-        ],
-        provider,
-    );
+    const dummyRpl = new ethers.Contract(addr(deployment, 'RocketTokenDummyRPL'), DRPL_ABI, guardian);
+    const rpl = new ethers.Contract(addr(deployment, 'RocketTokenRPL'), RPL_ABI, guardian);
 
     // Already a member?
     if (await daoTrusted.getMemberIsValid(member.address)) {
@@ -293,53 +292,19 @@ async function main() {
         }
     }
 
-    // Ensure member has enough RPL (via DRPL transfer + swap)
+    // Use the guardian's consolidated RPL balance for this member's bond.
     const memberRpl = await rpl.balanceOf(member.address);
     if (memberRpl < bond) {
         const need = bond - memberRpl;
-        console.log(`  Funding member with ${ethers.formatEther(need)} DRPL → RPL`);
-        let guardianDrpl = await dummyRpl.balanceOf(guardian.address);
-        if (guardianDrpl < need) {
-            console.log(`  Guardian DRPL low (${ethers.formatEther(guardianDrpl)}); minting ${ethers.formatEther(need)}...`);
-            try {
-                await tx(
-                    dummyRpl.connect(guardian).mint(
-                        guardian.address,
-                        need,
-                        await gasOverrides(dummyRpl, 'mint', [guardian.address, need], guardian),
-                    ),
-                    'Mint DRPL to guardian',
-                );
-            } catch (e) {
-                throw new Error(
-                    `Guardian DRPL ${ethers.formatEther(guardianDrpl)} < needed ${ethers.formatEther(need)} and mint failed: ${e.shortMessage || e.message}`,
-                );
-            }
+        const isGuardian = member.address.toLowerCase() === guardian.address.toLowerCase();
+        await ensureGuardianRpl({ guardian, rpl, dummyRpl, amount: isGuardian ? bond : need });
+        if (!isGuardian) {
+            await tx(
+                rpl.transfer(member.address, need,
+                    await gasOverrides(rpl, 'transfer', [member.address, need], guardian)),
+                `Transfer ${ethers.formatEther(need)} RPL to member`,
+            );
         }
-        await tx(
-            dummyRpl.connect(guardian).transfer(
-                member.address,
-                need,
-                await gasOverrides(dummyRpl, 'transfer', [member.address, need], guardian),
-            ),
-            'Transfer DRPL to member',
-        );
-        const rplAddr = await rpl.getAddress();
-        await tx(
-            dummyRpl.connect(member).approve(
-                rplAddr,
-                need,
-                await gasOverrides(dummyRpl, 'approve', [rplAddr, need], member),
-            ),
-            'Approve DRPL for swap',
-        );
-        await tx(
-            rpl.connect(member).swapTokens(
-                need,
-                await gasOverrides(rpl, 'swapTokens', [need], member),
-            ),
-            'Swap DRPL → RPL',
-        );
     } else {
         console.log(`  Member already has ${ethers.formatEther(memberRpl)} RPL`);
     }
@@ -428,7 +393,11 @@ function writeOutput(deployment, guardianAddress, memberWallet, memberId, member
     fs.writeFileSync(OUTPUT_FILE, JSON.stringify(out, null, 2));
 }
 
-main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-});
+module.exports = { loadSmartNodeWallet, resolveMemberKey };
+
+if (require.main === module) {
+    main().catch((e) => {
+        console.error(e);
+        process.exit(1);
+    });
+}

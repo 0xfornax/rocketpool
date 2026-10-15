@@ -1,0 +1,30 @@
+[
+  {
+    "type": "function",
+    "name": "deposit",
+    "inputs": [
+      {
+        "name": "_pubkey",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "_withdrawalCredentials",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "_signature",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "_depositDataRoot",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  }
+]

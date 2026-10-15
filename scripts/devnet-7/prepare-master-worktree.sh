@@ -37,15 +37,23 @@ else
     git worktree add --force -B "devnet-master-worktree" "$MASTER_WORKDIR" "$MASTER_REF"
 fi
 
-# Reuse parent node_modules (same lockfile generation usually works)
-if [[ ! -e "${MASTER_WORKDIR}/node_modules" ]]; then
-    if [[ -d "${ROOT_DIR}/node_modules" ]]; then
-        log "Symlinking node_modules from parent repo"
-        ln -sfn "${ROOT_DIR}/node_modules" "${MASTER_WORKDIR}/node_modules"
-    else
-        die "node_modules missing in ${ROOT_DIR}; run npm install first"
-    fi
+# Do not share the parent repo's node_modules. This branch is Hardhat 3; master /
+# v1.4.x need Hardhat 2 from the worktree package.json. A symlink leaves
+# node_modules/.bin/hardhat dangling and `npx hardhat` fails with
+# "sh: 1: hardhat: not found".
+if [[ -L "${MASTER_WORKDIR}/node_modules" ]]; then
+    log "Removing node_modules symlink (parent is Hardhat 3; baseline needs Hardhat 2)"
+    rm -f "${MASTER_WORKDIR}/node_modules"
 fi
+if [[ ! -x "${MASTER_WORKDIR}/node_modules/.bin/hardhat" ]]; then
+    log "npm install in baseline worktree (${MASTER_REF}) for Hardhat 2"
+    (
+        cd "$MASTER_WORKDIR"
+        npm install --no-audit --no-fund
+    )
+fi
+[[ -x "${MASTER_WORKDIR}/node_modules/.bin/hardhat" ]] \
+    || die "hardhat missing after npm install in ${MASTER_WORKDIR}"
 
 # Patch deploy.js with Kurtosis profile (master BSV: 5 fork slots; v1.4.1-dev: 7)
 node "${SCRIPT_DIR}/patch-master-deploy-kurtosis.js" "${MASTER_WORKDIR}/scripts/deploy.js"
@@ -73,8 +81,11 @@ node "${SCRIPT_DIR}/optimize-master-hardhat-config.js" \
 log "Compiling baseline contracts (${MASTER_REF}) in worktree (optimizer runs=1, viaIR)"
 (
     cd "$MASTER_WORKDIR"
-    npx hardhat clean
-    npx hardhat compile
+    # Worktree lives inside the parent repo; without this, Hardhat 2 walks up and
+    # loads the parent hardhat.config.ts (Hardhat 3 / "type": "module") → HH19.
+    export HARDHAT_CONFIG="${MASTER_WORKDIR}/hardhat.config.js"
+    ./node_modules/.bin/hardhat clean
+    ./node_modules/.bin/hardhat compile
 )
 
 # Fail fast if any deployed bytecode still exceeds 24 KiB

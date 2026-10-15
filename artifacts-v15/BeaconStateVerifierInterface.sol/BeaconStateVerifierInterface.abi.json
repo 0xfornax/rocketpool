@@ -1,0 +1,238 @@
+[
+  {
+    "type": "function",
+    "name": "verifyFinalBalance",
+    "inputs": [
+      {
+        "name": "_slotTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "_proofVersion",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "_proofData",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct VerifiedFinalBalance",
+        "components": [
+          {
+            "name": "validatorPubkeyHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "withdrawalCredentials",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "amountInGwei",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "withdrawalEpoch",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recentEpoch",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "verifyParticipation",
+    "inputs": [
+      {
+        "name": "_slotTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "_proofVersion",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "_proofData",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct VerifiedParticipation",
+        "components": [
+          {
+            "name": "validatorPubkeyHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "validatorIndex",
+            "type": "uint40",
+            "internalType": "uint40"
+          },
+          {
+            "name": "slot",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "participationSlot",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "participationFlags",
+            "type": "uint8",
+            "internalType": "uint8"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "verifySlot",
+    "inputs": [
+      {
+        "name": "_slotTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "_proofVersion",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "_proofData",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct VerifiedSlot",
+        "components": [
+          {
+            "name": "slot",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "verifyValidator",
+    "inputs": [
+      {
+        "name": "_slotTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "_proofVersion",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "_proofData",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct VerifiedValidator",
+        "components": [
+          {
+            "name": "validatorIndex",
+            "type": "uint40",
+            "internalType": "uint40"
+          },
+          {
+            "name": "validator",
+            "type": "tuple",
+            "internalType": "struct Validator",
+            "components": [
+              {
+                "name": "pubkey",
+                "type": "bytes",
+                "internalType": "bytes"
+              },
+              {
+                "name": "withdrawalCredentials",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "effectiveBalance",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "slashed",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "activationEligibilityEpoch",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "activationEpoch",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "exitEpoch",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "withdrawableEpoch",
+                "type": "uint64",
+                "internalType": "uint64"
+              }
+            ]
+          },
+          {
+            "name": "slot",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  }
+]

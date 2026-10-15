@@ -39,7 +39,7 @@ const defaultOpts = {
     beaconRoots: '0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02',
     withdrawalRequestPredeployAddress: '0x00000961Ef480Eb55e80D19ad83579A64c007002',
     logging: true,
-    // BeaconStateVerifier constructor expects uint64[6]: Altair..Fulu
+    // BeaconStateVerifier constructor expects uint64[7]: Altair..Gloas
     forkSlots: [
         74240n * 32n,   // Altair
         144896n * 32n,  // Bellatrix

@@ -43,41 +43,44 @@ network_params:
   # is delayed so the v1.4.0 (master) RP stack can be deployed and exercised first —
   # matching production, where megapool (v1.4) is already live before Gloas/v1.5.
   #
-  # Mainnet-like slot time (12s); SSZ vector widths kept via preset: mainnet.
-  #   seconds_per_slot: 12 → epoch ≈ 384s (~6.4m).
-  #   gloas_fork_epoch: 1 → Gloas at slot 32 (~6.4 minutes after genesis).
-  # After Gloas, deploy.sh runs the v1.5 upgrade.
+  # Faster slots; SSZ vector widths kept via preset: mainnet.
+  #   seconds_per_slot: 4 → epoch = 128s (2m 8s).
+  #   gloas_fork_epoch: 29 → Gloas at slot 928 (1h 1m 52s after genesis).
+  # After Gloas, deploy.sh runs the v1.5 upgrade unless SKIP_UPGRADE=1.
   fulu_fork_epoch: 0
   electra_fork_epoch: 0
   deneb_fork_epoch: 0
   capella_fork_epoch: 0
   bellatrix_fork_epoch: 0
   altair_fork_epoch: 0
-  gloas_fork_epoch: 1000
-  seconds_per_slot: 12
-  # Faster beacon-deposit → activation pipeline without changing slot time.
+  gloas_fork_epoch: 70
+  seconds_per_slot: 1
+  slot_duration_ms: 1000
+  # Faster beacon-deposit → activation pipeline with mainnet SSZ dimensions.
   #
   # Live diagnosis (epoch 15, validators 128–130):
   #   status=pending_queued, activation_eligibility_epoch=11, activation_epoch=17
   # → deposits WERE recognized; lag is elig→active, not eth1 inclusion.
   #
-  # Irreducible with preset:mainnet @ 12s (do NOT switch to minimal — Smart Node
+  # Epoch-based waits remain with preset:mainnet (do NOT switch to minimal — Smart Node
   # SSZ / BeaconStateVerifier need mainnet vector widths):
   #   MAX_SEED_LOOKAHEAD=4 (preset, not config) → act = epoch + 1 + 4
   #   eligibility must be finalized before dequeue (~1–2 epochs)
-  #   ⇒ ~5–7 epochs ≈ 32–45 min wall-clock after eligibility is set.
+  #   Four-second slots shorten each epoch to 2m 8s; they do not bypass finality.
   #
   # What we CAN shrink (applies only on next CLEAN=1 / fresh enclave):
-  #   eth1_follow_distance 2048→1  : deposit-tx → CL eth1 vote (~12s vs ~6.8h)
+  #   eth1_follow_distance 2048→1  : shorten legacy Eth1 deposit inclusion delay
   #   phase0 churn knobs           : pre-Electra activation queue width
   #   Electra/Gloas churn via genesis extra_env (package has no first-class keys)
   genesis_delay: 15
   eth1_follow_distance: 1
   churn_limit_quotient: 32
   max_per_epoch_activation_churn_limit: 256
-  min_validator_withdrawability_delay: 4
+  # One epoch (2m 8s) from exit epoch to withdrawal eligibility.
+  min_validator_withdrawability_delay: 1
   min_builder_withdrawability_delay: 2
-  shard_committee_period: 4
+  # One epoch (2m 8s) active before an exit can be requested.
+  shard_committee_period: 1
   # deploy_eip8282_contracts defaults to true when Gloas is scheduled
   # deposit: 0x0000bFF46984e3725691FA540a8C7589300D8282
   # exit:    0x000064D678505ad48F8cCb093BC65613800E8282
@@ -88,8 +91,8 @@ network_params:
 #   2048e9 Gwei = 2048 ETH ≈ 64 × 32 ETH validators / epoch.
 ethereum_genesis_generator_params:
   extra_env:
-    # Match EL block time (kurtosis geth ~12s); default 14 is mainnet estimate.
-    SECONDS_PER_ETH1_BLOCK: 12
+    # Match the configured 4-second slot/block time.
+    SECONDS_PER_ETH1_BLOCK: 1
     # Electra balance-based activation/exit churn (live defaults were mainnet:
     #   MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA=128e9 ≈ 4 vals/epoch — too tight once
     #   several megapool deposits land in the same window).

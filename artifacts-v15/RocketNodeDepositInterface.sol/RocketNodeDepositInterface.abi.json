@@ -1,0 +1,271 @@
+[
+  {
+    "type": "function",
+    "name": "deposit",
+    "inputs": [
+      {
+        "name": "_depositAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "_useExpressTicket",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "_validatorPubkey",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "_validatorSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "_depositDataRoot",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "depositEthFor",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "depositMulti",
+    "inputs": [
+      {
+        "name": "_deposits",
+        "type": "tuple[]",
+        "internalType": "struct RocketNodeDepositInterface.NodeDeposit[]",
+        "components": [
+          {
+            "name": "bondAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "useExpressTicket",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "validatorPubkey",
+            "type": "bytes",
+            "internalType": "bytes"
+          },
+          {
+            "name": "validatorSignature",
+            "type": "bytes",
+            "internalType": "bytes"
+          },
+          {
+            "name": "depositDataRoot",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "depositWithCredit",
+    "inputs": [
+      {
+        "name": "_depositAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "_useExpressTicket",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "_validatorPubkey",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "_validatorSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "_depositDataRoot",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "getBondRequirement",
+    "inputs": [
+      {
+        "name": "_numValidators",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getNodeCreditAndBalance",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getNodeDepositCredit",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getNodeEthBalance",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getNodeUsableCredit",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getNodeUsableCreditAndBalance",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "increaseDepositCreditBalance",
+    "inputs": [
+      {
+        "name": "_nodeOperator",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "withdrawEth",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  }
+]

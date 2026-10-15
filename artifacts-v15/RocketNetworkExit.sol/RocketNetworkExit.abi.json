@@ -1,0 +1,550 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "_rocketStorageAddress",
+        "type": "address",
+        "internalType": "contract RocketStorageInterface"
+      },
+      {
+        "name": "_withdrawalRequestPredeployAddress",
+        "type": "address",
+        "internalType": "address payable"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "exitMegapoolValidators",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorIds",
+        "type": "uint32[]",
+        "internalType": "uint32[]"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "forceMegapoolExit",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorId",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "forceMinipoolExit",
+    "inputs": [
+      {
+        "name": "_minipoolAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "getExitFee",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMegapoolCooperativeExitStart",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorId",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMegapoolExitType",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorId",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "enum RocketNetworkExitInterface.ExitType"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMegapoolExpectedUserCapital",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorId",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMegapoolOutstandingExitCount",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMinipoolCooperativeExitStart",
+    "inputs": [
+      {
+        "name": "_minipoolAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMinipoolExitRequestCount",
+    "inputs": [
+      {
+        "name": "_minipoolAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMinipoolExpectedUserCapital",
+    "inputs": [
+      {
+        "name": "_minipoolAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMinipoolLastExit",
+    "inputs": [
+      {
+        "name": "_minipoolAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getRequestedEth",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getVoluntaryEth",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "notifyMegapoolExit",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorId",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "notifyMegapoolFinalBalance",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorId",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "penaliseMinipool",
+    "inputs": [
+      {
+        "name": "_minipoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_slotTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "_proofVersion",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "_proofData",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "requestMegapoolExit",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorId",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "requestMinipoolExit",
+    "inputs": [
+      {
+        "name": "_minipoolAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "retryMegapoolExit",
+    "inputs": [
+      {
+        "name": "_megapoolAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorId",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "settleMinipoolExit",
+    "inputs": [
+      {
+        "name": "_minipoolAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "version",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "MegapoolExitReconciled",
+    "inputs": [
+      {
+        "name": "megapoolAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "validatorId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "exitType",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum RocketNetworkExitInterface.ExitType"
+      },
+      {
+        "name": "expectedUserCapital",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MegapoolExitRequested",
+    "inputs": [
+      {
+        "name": "megapoolAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "_validatorId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "pubkey",
+        "type": "bytes",
+        "indexed": false,
+        "internalType": "bytes"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MegapoolVoluntaryExitRecorded",
+    "inputs": [
+      {
+        "name": "megapoolAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "validatorId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "expectedUserCapital",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MinipoolExitReconciled",
+    "inputs": [
+      {
+        "name": "minipoolAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "expectedUserCapital",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MinipoolExitRequested",
+    "inputs": [
+      {
+        "name": "minipoolAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "pubkey",
+        "type": "bytes",
+        "indexed": false,
+        "internalType": "bytes"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MinipoolPenalised",
+    "inputs": [
+      {
+        "name": "minipoolAddress",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "_amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  }
+]

@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { ethers } = require('ethers');
+const { ensureGuardianRpl, RPL_ABI, DRPL_ABI } = require('./rpl-funding');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEPLOYMENT_FILE = process.env.DEPLOYMENT_FILE
@@ -162,35 +163,16 @@ async function fundOperatorRpl(provider, deployment, operator, amount) {
     if (!dummyAddr || !rplAddr) {
         throw new Error('RocketTokenDummyRPL or RocketTokenRPL missing from latest.json');
     }
-    const dummyRpl = new ethers.Contract(dummyAddr, [
-        'function balanceOf(address) view returns (uint256)',
-        'function mint(address to, uint256 amount)',
-        'function approve(address spender, uint256 amount) returns (bool)',
-    ], guardian);
-    const rpl = new ethers.Contract(rplAddr, [
-        'function transfer(address to, uint256 amount) returns (bool)',
-        'function swapTokens(uint256 amount)',
-    ], guardian);
-
-    let dummyBal = await dummyRpl.balanceOf(guardian.address);
-    if (dummyBal < amount) {
-        console.log(`  - Guardian DRPL low (${ethers.formatEther(dummyBal)}); minting ${ethers.formatEther(amount)}...`);
-        const opts = await gasOverrides(dummyRpl, 'mint', [guardian.address, amount], guardian);
-        const tx = await dummyRpl.mint(guardian.address, amount, opts);
-        const rc = await tx.wait();
-        if (rc.status !== 1) throw new Error(`DRPL mint failed tx=${tx.hash}`);
-        console.log(`    ok ${tx.hash}`);
+    const dummyRpl = new ethers.Contract(dummyAddr, DRPL_ABI, guardian);
+    const rpl = new ethers.Contract(rplAddr, RPL_ABI, guardian);
+    if (operator.address.toLowerCase() === guardian.address.toLowerCase()) {
+        await ensureGuardianRpl({ guardian, rpl, dummyRpl, amount: await rpl.balanceOf(guardian.address) + amount });
+        return;
     }
-
-    console.log(`  - Swap ${ethers.formatEther(amount)} DRPL → RPL and send to ${operator.address}...`);
-    let opts = await gasOverrides(dummyRpl, 'approve', [rplAddr, amount], guardian);
-    let tx = await dummyRpl.approve(rplAddr, amount, opts);
-    await tx.wait();
-    opts = await gasOverrides(rpl, 'swapTokens', [amount], guardian);
-    tx = await rpl.swapTokens(amount, opts);
-    await tx.wait();
-    opts = await gasOverrides(rpl, 'transfer', [operator.address, amount], guardian);
-    tx = await rpl.transfer(operator.address, amount, opts);
+    await ensureGuardianRpl({ guardian, rpl, dummyRpl, amount });
+    console.log(`  - Transfer ${ethers.formatEther(amount)} RPL to ${operator.address}...`);
+    const opts = await gasOverrides(rpl, 'transfer', [operator.address, amount], guardian);
+    const tx = await rpl.transfer(operator.address, amount, opts);
     const rc = await tx.wait();
     if (rc.status !== 1) throw new Error(`RPL transfer failed tx=${tx.hash}`);
     console.log(`    ok ${tx.hash}`);

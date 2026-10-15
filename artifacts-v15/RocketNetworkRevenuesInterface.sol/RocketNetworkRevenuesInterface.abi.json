@@ -1,0 +1,198 @@
+[
+  {
+    "type": "function",
+    "name": "calculateSplit",
+    "inputs": [
+      {
+        "name": "_sinceTime",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "nodeShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "voterShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "protocolDAOShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "rethShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getCurrentNodeShare",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getCurrentProtocolDAOShare",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getCurrentVoterShare",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getNodeAverageCapitalRatioSince",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_sinceTime",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getNodeCapitalRatio",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "initialise",
+    "inputs": [
+      {
+        "name": "_initialNodeShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "_initialVoterShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "_initialProtocolDAOShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setNodeCapitalRatio",
+    "inputs": [
+      {
+        "name": "_nodeAddress",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_value",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setNodeShare",
+    "inputs": [
+      {
+        "name": "_newShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setProtocolDAOShare",
+    "inputs": [
+      {
+        "name": "_newShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setVoterShare",
+    "inputs": [
+      {
+        "name": "_newShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  }
+]

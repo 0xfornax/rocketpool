@@ -2,9 +2,11 @@
 # Deploy a lean glamsterdam-devnet-7 Kurtosis network and Rocket Pool stack.
 #
 # Flow:
-#   1. Launch Kurtosis (Fulu genesis; Gloas at epoch 1, ~6.4 min @ 12s slots)
+#   1. Launch Kurtosis (Fulu genesis; Gloas at epoch 29, 1h 1m 52s @ 4s slots)
 #   2. Deploy Rocket Pool from MASTER_REF (pre-Gloas baseline; default: master / v1.4.0)
-#   3. Helpers + oDAO bootstrap + seed (operator ETH/RPL + deposit pool)
+#   3. Seed deposit pool immediately, then helpers + oDAO bootstrap + operator ETH/RPL
+#      Swap the combined DRPL requirement once in the guardian wallet before
+#      oDAO bootstrap; transfer RPL from that balance for bonds, seed and staking.
 #   4. Wait for Gloas
 #   5. Upgrade to THIS branch (v1.5 / RocketUpgradeOneDotFive)
 #
@@ -18,6 +20,10 @@
 #   ENCLAVE=my-devnet CLEAN=1 ./scripts/devnet-7/deploy.sh
 #   SKIP_KURTOSIS=1 PROVIDER_URL=http://127.0.0.1:8545 ./scripts/devnet-7/deploy.sh
 #   SKIP_UPGRADE=1 ./scripts/devnet-7/deploy.sh   # leave at baseline (master / v1.4.0) only
+#   # Fresh network ending at v1.4.1 (does not wait for Gloas):
+#   CLEAN=1 SKIP_UPGRADE=1 MASTER_REF=master ./scripts/devnet-7/deploy.sh && \
+#     ./scripts/devnet-7/upgrade-to-v1.4.1.sh && \
+#     ./scripts/devnet-7/generate-odao-config.sh
 #
 # Environment:
 #   ENCLAVE              Kurtosis enclave name (default: rp-devnet-7)
@@ -51,10 +57,12 @@
 #                          (defaults: 300 / 900; applied by propose-odao-upgrade.js)
 #   UPGRADE_DELAY_SECS    security-council veto window after an oDAO upgrade
 #                          proposal executes (default: 600 = 10 min; mainnet 7 days)
+#   PERFORMANCE_PERIOD_EPOCHS  performance measurement period (default: 16 epochs)
+#   PERFORMANCE_RESPONSE_WINDOW_SECS  performance challenge response window (default: 1800 = 30 min)
 #   NODE_TIMEZONE        registerNode timezone (default: Australia/Brisbane)
 #   ETHEREUM_PACKAGE     Kurtosis package ref (default: github.com/ethpandaops/ethereum-package)
 #   WAIT_TIMEOUT_SECS    RPC readiness timeout (default: 300)
-#   GLOAS_WAIT_TIMEOUT_SECS  Wait for Gloas before v1.5 upgrade (default: 600)
+#   GLOAS_WAIT_TIMEOUT_SECS  Wait for Gloas before v1.5 upgrade (default: 4500)
 #   DISCOVER_PORTS=1     Use `kurtosis port print` instead of fixed ports
 #   EL_HTTP / CL_HTTP    Override EL/CL URLs (default: fixed port_publisher ports)
 #
@@ -90,8 +98,8 @@ SKIP_UPGRADE="${SKIP_UPGRADE:-0}"
 ETHEREUM_PACKAGE="${ETHEREUM_PACKAGE:-github.com/ethpandaops/ethereum-package}"
 WAIT_TIMEOUT_SECS="${WAIT_TIMEOUT_SECS:-300}"
 # Wait for delayed Gloas before the v1.5 upgrade (not before baseline deploy).
-# Default covers gloas_fork_epoch: 1 @ 12s slots (~6.4 min) + margin.
-GLOAS_WAIT_TIMEOUT_SECS="${GLOAS_WAIT_TIMEOUT_SECS:-600}"
+# Default covers gloas_fork_epoch: 29 @ 4s slots (3712s) + margin.
+GLOAS_WAIT_TIMEOUT_SECS="${GLOAS_WAIT_TIMEOUT_SECS:-4500}"
 MASTER_REF="${MASTER_REF:-master}"
 MASTER_WORKDIR="${MASTER_WORKDIR:-${ROOT_DIR}/.devnet-master}"
 # Local Smart Node / megapool operator funded after each deploy
@@ -124,6 +132,40 @@ DEPLOY_GAS_LIMIT="${DEPLOY_GAS_LIMIT:-150000000}"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# This branch is Hardhat 3 (needs Node >= 22.13). The parent node_modules/.bin/hardhat
+# shim is often a stale Hardhat 2 symlink after the HH3 upgrade.
+ensure_parent_hardhat() {
+    local major
+    major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+    if [[ "$major" -lt 22 ]]; then
+        if [[ -s "${HOME}/.nvm/nvm.sh" ]]; then
+            # shellcheck disable=SC1091
+            . "${HOME}/.nvm/nvm.sh"
+            if ! nvm use 22 >/dev/null 2>&1; then
+                log "Installing Node.js 22 via nvm (Hardhat 3 requires >= 22.13; have $(node -v))"
+                nvm install 22
+                nvm use 22
+            fi
+        fi
+        major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+    fi
+    if [[ "$major" -lt 22 ]]; then
+        die "Hardhat 3 on this branch needs Node.js >= 22.13 (have $(node -v)). Install with: nvm install 22"
+    fi
+
+    local bin="${ROOT_DIR}/node_modules/.bin/hardhat"
+    local cli="${ROOT_DIR}/node_modules/hardhat/dist/src/cli.js"
+    if [[ -L "$bin" && ! -e "$bin" ]]; then
+        rm -f "$bin"
+    fi
+    if [[ ! -e "$bin" && -f "$cli" ]]; then
+        log "Recreating node_modules/.bin/hardhat → Hardhat 3 CLI"
+        ln -sfn "../hardhat/dist/src/cli.js" "$bin"
+    fi
+    [[ -e "$bin" ]] || die "hardhat CLI missing at ${bin}; run npm install in ${ROOT_DIR}"
+    PARENT_HARDHAT="$bin"
+}
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed"
@@ -334,7 +376,7 @@ wait_for_gloas() {
 
     local gloas_epoch=""
     local slots_per_epoch="32"
-    local seconds_per_slot="12"
+    local seconds_per_slot="4"
     local spec_json
     if spec_json="$(curl -sf --max-time 10 "${cl_http}/eth/v1/config/spec" 2>/dev/null)"; then
         local v
@@ -414,7 +456,7 @@ extract_genesis_params() {
 
     local genesis_time=""
     local genesis_validators_root=""
-    local seconds_per_slot="12"
+    local seconds_per_slot="4"
     # Default matches mainnet preset (network_params.yaml); overridden by genesis/spec.
     local slots_per_historical_root="8192"
 
@@ -513,8 +555,8 @@ extract_genesis_params() {
     export FORK_SLOTS_MASTER="${FORK_SLOTS_MASTER:-0,0,0,0,0}"
     export FORK_SLOTS_V141="${FORK_SLOTS_V141:-0,0,0,0,0,0,${gloas_slot_for_bsv}}"
     export GLOAS_SLOT="${GLOAS_SLOT:-$gloas_slot_for_bsv}"
-    # v1.5 BSV on this branch: typically Altair..Fulu (6) + separate genesis immutables.
-    export FORK_SLOTS="${FORK_SLOTS:-0,0,0,0,0,0}"
+    # v1.5 BSV: Altair..Gloas (7) + separate genesis immutables.
+    export FORK_SLOTS="${FORK_SLOTS:-0,0,0,0,0,0,${GLOAS_SLOT:-32}}"
 
     log "Genesis time:              ${GENESIS_BLOCK_TIMESTAMP}"
     log "Genesis validators root:   ${GENESIS_VALIDATOR_ROOT}"
@@ -529,7 +571,7 @@ extract_genesis_params() {
 prepare_master_worktree() {
     log "Preparing baseline worktree (${MASTER_REF} → ${MASTER_WORKDIR})"
     MASTER_REF="$MASTER_REF" MASTER_WORKDIR="$MASTER_WORKDIR" \
-        "${SCRIPT_DIR}/prepare-master-worktree.sh" >/dev/null
+        "${SCRIPT_DIR}/prepare-master-worktree.sh"
     [[ -d "$MASTER_WORKDIR" ]] || die "baseline worktree missing at ${MASTER_WORKDIR}"
 }
 
@@ -615,15 +657,15 @@ deploy_rocket_pool_master() {
             rm -rf deployments
             ln -sfn "${ROOT_DIR}/deployments" deployments
         fi
-        npx hardhat run scripts/deploy.js --network custom
+        # Pin Hardhat 2 config; parent repo is Hardhat 3 ("type": "module").
+        export HARDHAT_CONFIG="${MASTER_WORKDIR}/hardhat.config.js"
+        ./node_modules/.bin/hardhat run scripts/deploy.js --network custom
     )
     # Copy latest.json is already in shared deployments via symlink
     [[ -f "${ROOT_DIR}/deployments/latest.json" ]] \
         || die "baseline (${MASTER_REF}) deploy did not produce deployments/latest.json"
     log "Master deploy complete; RocketStorage recorded in deployments/latest.json"
 
-    # Addresses + live Kurtosis ports in one step.
-    sync_smartnode_config
 }
 
 # After Gloas + master / v1.4.0 baseline: upgrade selected contracts to this branch (v1.5).
@@ -647,9 +689,42 @@ upgrade_rocket_pool_v1_5() {
         export ROCKET_STORAGE
         [[ -n "$ROCKET_STORAGE" ]] || die "RocketStorage missing from latest.json"
         log "  RocketStorage=${ROCKET_STORAGE}"
-        # Ensure this branch is compiled
-        npx hardhat compile
-        npx hardhat run scripts/devnet-7/deploy-upgrade-v1.5.js --network custom
+        # This branch's Hardhat 3 toolbox is missing peers; compile upgrade
+        # targets with forge instead of `npx hardhat`.
+        command -v forge >/dev/null 2>&1 || die "forge is required for the v1.5 upgrade (foundry)"
+        v15_out="${ROOT_DIR}/artifacts-v15"
+        log "  Compiling v1.5 upgrade targets with forge → ${v15_out}"
+        forge build \
+            --out "$v15_out" \
+            --use 0.8.30 \
+            --optimize \
+            --optimizer-runs 15000 \
+            --via-ir \
+            --evm-version cancun \
+            --remappings "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/" \
+            --remappings "@openzeppelin4/contracts/=node_modules/@openzeppelin4/contracts/" \
+            "${ROOT_DIR}/contracts/contract/upgrade/RocketUpgradeOneDotFive.sol" \
+            "${ROOT_DIR}/contracts/contract/megapool/RocketMegapoolDelegate.sol" \
+            "${ROOT_DIR}/contracts/contract/util/BeaconStateVerifier.sol" \
+            "${ROOT_DIR}/contracts/contract/network/RocketNetworkExit.sol" \
+            "${ROOT_DIR}/contracts/contract/network/RocketNetworkRedemptions.sol" \
+            "${ROOT_DIR}/contracts/contract/network/RocketNetworkParticipation.sol" \
+            "${ROOT_DIR}/contracts/contract/dao/protocol/settings/RocketDAOProtocolSettingsMegapool.sol" \
+            "${ROOT_DIR}/contracts/contract/dao/protocol/settings/RocketDAOProtocolSettingsNetwork.sol" \
+            "${ROOT_DIR}/contracts/contract/megapool/RocketMegapoolManager.sol" \
+            "${ROOT_DIR}/contracts/contract/network/RocketNetworkPenalties.sol"
+        log "  Compiling 0.7.6 minipool delegate/base with forge"
+        forge build \
+            --out "$v15_out" \
+            --use 0.7.6 \
+            --optimize \
+            --optimizer-runs 15000 \
+            --evm-version istanbul \
+            --remappings "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/" \
+            "${ROOT_DIR}/contracts/contract/minipool/RocketMinipoolDelegate.sol" \
+            "${ROOT_DIR}/contracts/contract/minipool/RocketMinipoolBase.sol"
+        export V15_ARTIFACT_DIR="$v15_out"
+        node "${SCRIPT_DIR}/deploy-upgrade-v1.5.js"
     )
 }
 
@@ -746,10 +821,36 @@ generate_odao_config() {
     ENCLAVE="$ENCLAVE" "${SCRIPT_DIR}/generate-odao-config.sh"
 }
 
+prepare_rpl_funding() {
+    local provider_url="$1"
+    log "Preparing combined guardian RPL funding for oDAO bonds, operator and rewards"
+    (
+        cd "$ROOT_DIR"
+        export PROVIDER_URL="$provider_url"
+        export PRIVATE_KEY ODAO_PRIVATE_KEY RP_DIR SEED_ADDRESS SEED_RPL
+        export SKIP_ODAO SKIP_SEED SKIP_REGISTER SKIP_ODAO_UPGRADE_PROPOSAL
+        # Only mark funding as prepared after the combined swap succeeds.
+        unset RPL_FUNDING_PREPARED
+        node "${SCRIPT_DIR}/prepare-rpl-funding.js"
+    )
+    export RPL_FUNDING_PREPARED=1
+}
+
+seed_deposit_pool() {
+    local provider_url="$1"
+    log "Seeding deposit pool immediately after baseline deploy (${DEPOSIT_POOL_ETH} ETH)"
+    (
+        cd "$ROOT_DIR"
+        export PROVIDER_URL="$provider_url"
+        export PRIVATE_KEY DEPOSIT_POOL_ETH
+        node "${SCRIPT_DIR}/seed-devnet.js" --deposit-pool-only
+    )
+}
+
 seed_devnet() {
     local provider_url="$1"
-    log "Seeding operator funds + deposit pool"
-    log "  SEED_ADDRESS=${SEED_ADDRESS}  ETH=${SEED_ETH}  RPL=${SEED_RPL}  pool=${DEPOSIT_POOL_ETH}"
+    log "Seeding operator funds + rewards and configuring devnet settings"
+    log "  SEED_ADDRESS=${SEED_ADDRESS}  ETH=${SEED_ETH}  RPL=${SEED_RPL}"
     (
         cd "$ROOT_DIR"
         export PROVIDER_URL="$provider_url"
@@ -758,7 +859,8 @@ seed_devnet() {
         export SEED_ADDRESS
         export SEED_ETH
         export SEED_RPL
-        export DEPOSIT_POOL_ETH
+        # The pool was funded immediately after baseline deployment.
+        export DEPOSIT_POOL_ETH=0
         node "${SCRIPT_DIR}/seed-devnet.js"
     )
 }
@@ -849,7 +951,7 @@ main() {
         # Allow caller-supplied genesis env vars; fill defaults if still missing
         export GENESIS_BLOCK_TIMESTAMP="${GENESIS_BLOCK_TIMESTAMP:-0}"
         export GENESIS_VALIDATOR_ROOT="${GENESIS_VALIDATOR_ROOT:-0x0000000000000000000000000000000000000000000000000000000000000000}"
-        export SECONDS_PER_SLOT="${SECONDS_PER_SLOT:-12}"
+        export SECONDS_PER_SLOT="${SECONDS_PER_SLOT:-4}"
         export SLOTS_PER_HISTORICAL_ROOT="${SLOTS_PER_HISTORICAL_ROOT:-8192}"
         # Align Gloas slot with network_params / live CL when FORK_SLOTS_MASTER unset
         if [[ -z "${FORK_SLOTS_MASTER:-}" ]]; then
@@ -872,7 +974,7 @@ main() {
             export FORK_SLOTS_V141="0,0,0,0,0,0,${ge_slot}"
             export GLOAS_SLOT="$ge_slot"
         fi
-        export FORK_SLOTS="${FORK_SLOTS:-0,0,0,0,0,0}"
+        export FORK_SLOTS="${FORK_SLOTS:-0,0,0,0,0,0,${GLOAS_SLOT:-32}}"
         if [[ "$GENESIS_BLOCK_TIMESTAMP" == "0" ]]; then
             log "warning: GENESIS_BLOCK_TIMESTAMP is 0; set it for correct BeaconStateVerifier immutables"
         fi
@@ -894,13 +996,18 @@ main() {
     # --- Phase A: master / v1.4.0 baseline (pre-Gloas stack, incl. megapool) ---
     # Do NOT wait for Gloas here — baseline contracts match what ships before the
     # Gloas/v1.5 upgrade on production.
-    # (deploy_rocket_pool_master already calls sync_smartnode_config)
     deploy_rocket_pool_master "$provider_url"
     verify_deposits_enabled "$provider_url"
+    if [[ "$SKIP_SEED" != "1" ]]; then
+        seed_deposit_pool "$provider_url"
+    fi
+    sync_smartnode_config
     # Helpers are not part of the baseline third-party deploy; always run from this branch.
     deploy_helpers "$provider_url"
     # Helpers updated Multicall / balance batcher / signer registry — addresses + ports.
     sync_smartnode_config
+
+    prepare_rpl_funding "$provider_url"
 
     if [[ "$SKIP_ODAO" != "1" ]]; then
         bootstrap_odao "$provider_url"
@@ -916,7 +1023,7 @@ main() {
         log "SKIP_ODAO=1; leaving oDAO bootstrap for later"
     fi
 
-    # Fund operator + seed deposit pool against baseline contracts.
+    # Fund operator/rewards and configure settings; the deposit pool is already seeded.
     if [[ "$SKIP_SEED" != "1" ]]; then
         seed_devnet "$provider_url"
     else

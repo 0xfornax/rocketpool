@@ -16,14 +16,14 @@
  * Usage:
  *   PROVIDER_URL=... PRIVATE_KEY=0x...guardian... \
  *   ROCKET_STORAGE=0x... (optional; defaults to latest.json) \
- *   npx hardhat run scripts/devnet-7/deploy-upgrade-v1.5.js --network custom
+ *   node scripts/devnet-7/deploy-upgrade-v1.5.js
  */
 
 const fs = require('fs');
 const path = require('path');
 const pako = require('pako');
-const hre = require('hardhat');
-const { ethers } = hre;
+const { ethers } = require('ethers');
+const { setPerformanceSettings } = require('./set-performance-settings');
 
 const ROOT = path.resolve(__dirname, '../..');
 const DEPLOYMENT_FILE = process.env.DEPLOYMENT_FILE
@@ -53,9 +53,54 @@ function saveDeployment(data) {
     console.log(`  Updated ${DEPLOYMENT_FILE}`);
 }
 
+const ARTIFACTS = {
+    RocketMegapoolDelegate: 'RocketMegapoolDelegate.sol/RocketMegapoolDelegate.json',
+    RocketMinipoolDelegate: 'RocketMinipoolDelegate.sol/RocketMinipoolDelegate.json',
+    RocketMinipoolBase: 'RocketMinipoolBase.sol/RocketMinipoolBase.json',
+    RocketMegapoolManager: 'RocketMegapoolManager.sol/RocketMegapoolManager.json',
+    RocketDAOProtocolSettingsMegapool: 'RocketDAOProtocolSettingsMegapool.sol/RocketDAOProtocolSettingsMegapool.json',
+    RocketNetworkRedemptions: 'RocketNetworkRedemptions.sol/RocketNetworkRedemptions.json',
+    RocketDAOProtocolSettingsNetwork: 'RocketDAOProtocolSettingsNetwork.sol/RocketDAOProtocolSettingsNetwork.json',
+    BeaconStateVerifier: 'BeaconStateVerifier.sol/BeaconStateVerifier.json',
+    RocketNetworkParticipation: 'RocketNetworkParticipation.sol/RocketNetworkParticipation.json',
+    RocketNetworkExit: 'RocketNetworkExit.sol/RocketNetworkExit.json',
+    RocketNetworkPenalties: 'RocketNetworkPenalties.sol/RocketNetworkPenalties.json',
+    RocketUpgradeOneDotFive: 'RocketUpgradeOneDotFive.sol/RocketUpgradeOneDotFive.json',
+};
+
+function loadArtifact(name) {
+    const rel = ARTIFACTS[name];
+    if (!rel) throw new Error(`unknown artifact ${name}`);
+    const dirs = [
+        process.env.V15_ARTIFACT_DIR,
+        path.join(ROOT, 'artifacts-v15'),
+        '/tmp/rp-v15-artifacts',
+    ].filter(Boolean);
+    let p = null;
+    for (const dir of dirs) {
+        const cand = path.join(dir, rel);
+        if (fs.existsSync(cand)) {
+            p = cand;
+            break;
+        }
+    }
+    if (!p) {
+        throw new Error(`missing forge artifact ${name} (${rel}). Set V15_ARTIFACT_DIR or run forge build --out artifacts-v15`);
+    }
+    const art = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (art.bytecode && typeof art.bytecode === 'object' && art.bytecode.object) {
+        art.bytecode = art.bytecode.object;
+    }
+    if (art.deployedBytecode && typeof art.deployedBytecode === 'object' && art.deployedBytecode.object) {
+        art.deployedBytecode = art.deployedBytecode.object;
+    }
+    return art;
+}
+
 async function deployContract(name, args, signer) {
     console.log(`  - Deploying ${name}...`);
-    const factory = await ethers.getContractFactory(name, signer);
+    const artifact = loadArtifact(name);
+    const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode, signer);
     // Large contracts (RocketMegapoolDelegate) need ~68–80M gas under Glamsterdam
     // state-creation costs. Do NOT clamp to 16M — that OOGs and looks like a revert.
     // Prefer estimateGas * 1.25, capped at 90% of the current block gas limit.
@@ -100,34 +145,40 @@ async function main() {
         throw new Error('RocketStorage address missing (set ROCKET_STORAGE or latest.json)');
     }
 
-    const [signer] = await ethers.getSigners();
+    const providerUrl = process.env.PROVIDER_URL || process.env.EL_HTTP;
+    if (!providerUrl) throw new Error('PROVIDER_URL required');
+    const key = process.env.PRIVATE_KEY
+        || '0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31';
+    const privateKey = key.startsWith('0x') ? key : `0x${key}`;
+    const provider = new ethers.JsonRpcProvider(providerUrl);
+    const signer = new ethers.Wallet(privateKey, provider);
+    const wallet = signer;
     console.log('v1.5 upgrade (RocketUpgradeOneDotFive)');
     console.log(`  Deployer:       ${signer.address}`);
     console.log(`  RocketStorage:  ${rocketStorage}`);
-    console.log(`  Provider:       ${process.env.PROVIDER_URL || '(hardhat network)'}`);
+    console.log(`  Provider:       ${providerUrl}`);
 
-    // Genesis immutables for BeaconStateVerifier (this branch includes Fulu).
+    // Fork configuration for the upstream BeaconStateVerifier constructor.
     const slotsPerHistoricalRoot = BigInt(process.env.SLOTS_PER_HISTORICAL_ROOT || '8192');
-    const genesisBlockTimestamp = BigInt(process.env.GENESIS_BLOCK_TIMESTAMP || '0');
-    const genesisValidatorRoot = process.env.GENESIS_VALIDATOR_ROOT
-        || '0x0000000000000000000000000000000000000000000000000000000000000000';
     const beaconRoots = process.env.BEACON_ROOTS
         || '0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02';
-    // Altair..Fulu (6 entries) — all at genesis for this Kurtosis schedule
-    const forkSlotsRaw = (process.env.FORK_SLOTS || '0,0,0,0,0,0').split(',').map((s) => BigInt(s.trim()));
-    if (forkSlotsRaw.length !== 6) {
-        throw new Error(`FORK_SLOTS must have 6 values (Altair..Fulu); got ${forkSlotsRaw.length}`);
+    // Altair..Gloas (7 entries); Gloas activates at the configured slot.
+    const forkSlotsRaw = (process.env.FORK_SLOTS || `0,0,0,0,0,0,${process.env.GLOAS_SLOT || '32'}`).split(',').map((s) => BigInt(s.trim()));
+    if (forkSlotsRaw.length !== 7) {
+        throw new Error(`FORK_SLOTS must have 7 values (Altair..Gloas); got ${forkSlotsRaw.length}`);
     }
     // EIP-7002 withdrawal request predeploy (mainnet/kurtosis system contract)
     const withdrawalRequest = process.env.WITHDRAWAL_REQUEST_PREDEPLOY
         || '0x00000961Ef480Eb55e80D19ad83579A64c007002';
 
-    // --- Deploy upgrade targets (order matches RocketUpgradeOneDotFive.set) ---
+    // --- Deploy upgrade targets (order matches RocketUpgradeOneDotFive.set / execute) ---
     const megapoolDelegate = await deployContract(
         'RocketMegapoolDelegate',
         [rocketStorage, withdrawalRequest],
         signer,
     );
+    const minipoolDelegate = await deployContract('RocketMinipoolDelegate', [], signer);
+    const megapoolManager = await deployContract('RocketMegapoolManager', [rocketStorage], signer);
     const settingsMegapool = await deployContract(
         'RocketDAOProtocolSettingsMegapool',
         [rocketStorage],
@@ -145,7 +196,7 @@ async function main() {
     );
     const beaconStateVerifier = await deployContract(
         'BeaconStateVerifier',
-        [rocketStorage, slotsPerHistoricalRoot, forkSlotsRaw, beaconRoots, genesisBlockTimestamp, genesisValidatorRoot],
+        [rocketStorage, slotsPerHistoricalRoot, forkSlotsRaw, beaconRoots],
         signer,
     );
     const networkParticipation = await deployContract(
@@ -155,6 +206,11 @@ async function main() {
     );
     const networkExit = await deployContract(
         'RocketNetworkExit',
+        [rocketStorage, withdrawalRequest],
+        signer,
+    );
+    const networkPenalties = await deployContract(
+        'RocketNetworkPenalties',
         [rocketStorage],
         signer,
     );
@@ -166,25 +222,35 @@ async function main() {
 
     const addresses = [
         await megapoolDelegate.getAddress(),
+        await minipoolDelegate.getAddress(),
+        await megapoolManager.getAddress(),
         await settingsMegapool.getAddress(),
         await networkRedemptions.getAddress(),
         await settingsNetwork.getAddress(),
         await beaconStateVerifier.getAddress(),
         await networkParticipation.getAddress(),
         await networkExit.getAddress(),
+        await networkPenalties.getAddress(),
     ];
-    const art = async (name) => {
-        const a = await hre.artifacts.readArtifact(name);
-        return compressABI(a.abi);
-    };
+    const art = (name) => compressABI(loadArtifact(name).abi);
+    const minipoolAbi = [
+        ...loadArtifact('RocketMinipoolBase').abi,
+        ...loadArtifact('RocketMinipoolDelegate').abi,
+        { stateMutability: 'payable', type: 'fallback' },
+        { stateMutability: 'payable', type: 'receive' },
+    ];
     const abisFromArtifacts = [
-        await art('RocketMegapoolDelegate'),
-        await art('RocketDAOProtocolSettingsMegapool'),
-        await art('RocketNetworkRedemptions'),
-        await art('RocketDAOProtocolSettingsNetwork'),
-        await art('BeaconStateVerifier'),
-        await art('RocketNetworkParticipation'),
-        await art('RocketNetworkExit'),
+        art('RocketMegapoolDelegate'),
+        art('RocketMinipoolDelegate'),
+        art('RocketMegapoolManager'),
+        art('RocketDAOProtocolSettingsMegapool'),
+        art('RocketNetworkRedemptions'),
+        art('RocketDAOProtocolSettingsNetwork'),
+        art('BeaconStateVerifier'),
+        art('RocketNetworkParticipation'),
+        art('RocketNetworkExit'),
+        art('RocketNetworkPenalties'),
+        compressABI(minipoolAbi),
     ];
 
     console.log('  - upgrade.set(...)');
@@ -204,12 +270,18 @@ async function main() {
     if (!daoUpgradeAddr) {
         throw new Error('RocketDAONodeTrustedUpgrade missing from latest.json');
     }
-    const daoUpgrade = await ethers.getContractAt('RocketDAONodeTrustedUpgrade', daoUpgradeAddr, signer);
-    const upgradeAbi = compressABI((await hre.artifacts.readArtifact('RocketUpgradeOneDotFive')).abi);
+    const daoUpgrade = new ethers.Contract(daoUpgradeAddr, [
+        'function bootstrapUpgrade(string _type, string _name, string _contractAbi, address _contractAddress)',
+    ], signer);
+    const upgradeAbi = compressABI(loadArtifact('RocketUpgradeOneDotFive').abi);
     const upgradeAddr = await upgrade.getAddress();
 
     // Skip if a previous partial run already registered this (or another) upgrade contract.
-    const storage = await ethers.getContractAt('RocketStorage', rocketStorage);
+    const storage = new ethers.Contract(rocketStorage, [
+        'function getAddress(bytes32) view returns (address)',
+        'function getBool(bytes32) view returns (bool)',
+        'function getGuardian() view returns (address)',
+    ], provider);
     const getAddress = storage.getFunction('getAddress(bytes32)');
     const getBool = storage.getFunction('getBool(bytes32)');
     const registered = await getAddress(
@@ -245,30 +317,36 @@ async function main() {
 
     console.log('  - upgrade.execute()');
     // Large multi-contract upgrade; give plenty of gas on high-limit Kurtosis blocks
-    tx = await upgrade.execute({ gasLimit: process.env.EXECUTE_GAS_LIMIT || 50_000_000 });
+    tx = await upgrade.execute({ gasLimit: BigInt(process.env.EXECUTE_GAS_LIMIT || '50000000') });
     await tx.wait();
     console.log(`    ok ${tx.hash}`);
 
     // Merge addresses into deployment record
     deployment.addresses.RocketMegapoolDelegate = addresses[0];
-    deployment.addresses.RocketDAOProtocolSettingsMegapool = addresses[1];
-    deployment.addresses.RocketNetworkRedemptions = addresses[2];
-    deployment.addresses.RocketDAOProtocolSettingsNetwork = addresses[3];
-    deployment.addresses.BeaconStateVerifier = addresses[4];
-    deployment.addresses.RocketNetworkParticipation = addresses[5];
-    deployment.addresses.RocketNetworkExit = addresses[6];
+    deployment.addresses.RocketMinipoolDelegate = addresses[1];
+    deployment.addresses.RocketMegapoolManager = addresses[2];
+    deployment.addresses.RocketDAOProtocolSettingsMegapool = addresses[3];
+    deployment.addresses.RocketNetworkRedemptions = addresses[4];
+    deployment.addresses.RocketDAOProtocolSettingsNetwork = addresses[5];
+    deployment.addresses.BeaconStateVerifier = addresses[6];
+    deployment.addresses.RocketNetworkParticipation = addresses[7];
+    deployment.addresses.RocketNetworkExit = addresses[8];
+    deployment.addresses.RocketNetworkPenalties = addresses[9];
     deployment.addresses.RocketUpgradeOneDotFive = upgradeAddr;
     deployment.protocolVersion = '1.5';
     deployment.upgradeV15 = {
         executedAt: new Date().toISOString(),
         addresses: {
             RocketMegapoolDelegate: addresses[0],
-            RocketDAOProtocolSettingsMegapool: addresses[1],
-            RocketNetworkRedemptions: addresses[2],
-            RocketDAOProtocolSettingsNetwork: addresses[3],
-            BeaconStateVerifier: addresses[4],
-            RocketNetworkParticipation: addresses[5],
-            RocketNetworkExit: addresses[6],
+            RocketMinipoolDelegate: addresses[1],
+            RocketMegapoolManager: addresses[2],
+            RocketDAOProtocolSettingsMegapool: addresses[3],
+            RocketNetworkRedemptions: addresses[4],
+            RocketDAOProtocolSettingsNetwork: addresses[5],
+            BeaconStateVerifier: addresses[6],
+            RocketNetworkParticipation: addresses[7],
+            RocketNetworkExit: addresses[8],
+            RocketNetworkPenalties: addresses[9],
             RocketUpgradeOneDotFive: upgradeAddr,
         },
     };
@@ -312,6 +390,8 @@ async function main() {
         }
     }
 
+    // Apply devnet timings after execute(), which installs protocol defaults.
+    await setPerformanceSettings(provider, wallet, rocketStorage);
     console.log('v1.5 upgrade complete');
 }
 
